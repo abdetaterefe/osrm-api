@@ -1,9 +1,10 @@
-FROM node:20-alpine
-RUN corepack enable && corepack prepare pnpm@9 --activate
+FROM node:22-alpine
+RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
 COPY pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY api/package*.json ./api/
 COPY cloudflare/package*.json ./cloudflare/
+RUN echo 'enable-pre-post-scripts=true' > .npmrc
 RUN pnpm install --frozen-lockfile
 COPY api/tsconfig.json ./api/
 COPY api/src/ ./api/src/
