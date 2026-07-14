@@ -7,9 +7,24 @@ Routing and distance calculation service for Ethiopia, powered by [OSRM](https:/
 - **4 vehicle profiles**: car, motorcycle, bicycle, foot
 - **Real road routing** using OpenStreetMap data for Ethiopia
 - **Monthly auto-update** for map data
-- **Zero config** — one command to run everything
+- **Run anywhere**: Docker (self-hosted) or Cloudflare Containers (serverless)
+- **Same API** for both — pick whichever fits your setup
 
-## Quick Start
+## Choose Your Platform
+
+| | Docker | Cloudflare Containers |
+|---|---|---|
+| **Cost** | Your own server | Workers Paid plan |
+| **Setup** | `docker compose up` | `npx wrangler deploy` |
+| **Cold start** | Instant | ~5 min (first time) |
+| **Monthly update** | Cron container | Worker cron trigger |
+| **Scaling** | Manual | Automatic |
+
+---
+
+## Docker (Self-Hosted)
+
+### Quick Start
 
 ```bash
 docker compose up -d
@@ -17,9 +32,83 @@ docker compose up -d
 
 On first run, it downloads Ethiopia OSM data (~133MB) and processes it for all profiles (~5 min). After that, services start automatically.
 
+### Monthly Map Updates
+
+Automatic on the 1st of every month at 3:00 AM. The `map-updater` container downloads fresh data from [Geofabrik](https://download.geofabrik.de/africa/ethiopia-latest.osm.pbf), reprocesses all profiles, and restarts the routing services.
+
+To run manually:
+```bash
+docker exec osrm-map-updater /usr/local/bin/update-map.sh
+```
+
+### Stopping
+
+```bash
+docker compose down
+```
+
+---
+
+## Cloudflare Containers (Serverless)
+
+### Prerequisites
+
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) installed
+- Cloudflare account (Workers Paid plan required for Containers)
+
+### Setup & Deploy
+
+```bash
+cd cloudflare
+npm install
+npx wrangler deploy
+```
+
+This will:
+1. Build a single Docker image with all 4 OSRM profiles + the API
+2. Push it to Cloudflare's container registry
+3. Deploy the Worker that routes to the container
+
+### How it Works
+
+Everything runs in **one container** (no docker-compose):
+
+```
+┌──────────────────────────────────────────────┐
+│            Cloudflare Container              │
+│                                              │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐        │
+│  │ OSRM    │ │ OSRM    │ │ OSRM    │  ...   │
+│  │ car     │ │ bike    │ │ foot    │        │
+│  │ :5001   │ │ :5002   │ │ :5003   │        │
+│  └────┬────┘ └────┬────┘ └────┬────┘        │
+│       └───────────┼───────────┘              │
+│             ┌─────┴─────┐                    │
+│             │ Hono API  │                    │
+│             │   :3000   │                    │
+│             └───────────┘                    │
+└──────────────────────────────────────────────┘
+                     ▲
+                     │
+            ┌────────┴────────┐
+            │ Cloudflare      │
+            │ Worker          │
+            └─────────────────┘
+```
+
+### Monthly Map Updates
+
+Automatic via Cloudflare Workers cron trigger (`0 3 1 * *` — 1st of every month at 3:00 AM). The Worker restarts the container, which re-downloads and re-processes the map data.
+
+### Instance Type
+
+Uses `standard-4` (4 vCPU, 12GB RAM, 20GB disk). Edit `wrangler.jsonc` to change.
+
+---
+
 ## API Endpoints
 
-All endpoints run on `http://localhost:3000`.
+All endpoints run on `http://localhost:3000` (Docker) or your Worker URL (Cloudflare).
 
 ### `GET /health`
 
@@ -113,38 +202,17 @@ Response:
 }
 ```
 
-## Architecture
-
-```
-                 ┌─────────────┐
-                 │  Your App   │
-                 │  Backend    │
-                 └──────┬──────┘
-                        │ :3000
-                 ┌──────┴──────┐
-                 │  Hono API   │
-                 │  (server.js)│
-                 └──────┬──────┘
-            ┌───────────┼───────────┐
-            │           │           │
-     ┌──────┴──┐ ┌──────┴──┐ ┌──────┴──┐
-     │ OSRM    │ │ OSRM    │ │ OSRM    │  ...
-     │ car     │ │ bike    │ │ foot    │
-     │ :5001   │ │ :5002   │ │ :5003   │
-     └─────────┘ └─────────┘ └─────────┘
-```
-
-Each OSRM instance runs the MLD (Multi-Level Dijkstra) algorithm with preprocessed Ethiopia road data.
+---
 
 ## Project Structure
 
 ```
 ├── docker-compose.yml        # Docker deployment (multi-container)
-├── Dockerfile.init            # Init container image
+├── Dockerfile.init            # Init container image for Docker
 ├── wrangler.jsonc             # Cloudflare Containers config
 ├── profiles/
 │   ├── car.lua                # Car routing profile
-│   ├── motorcycle.lua         # Motorcycle profile (faster urban speeds)
+│   ├── motorcycle.lua         # Motorcycle profile
 │   ├── bicycle.lua            # Bicycle profile
 │   └── foot.lua               # Walking profile
 ├── scripts/
@@ -154,122 +222,13 @@ Each OSRM instance runs the MLD (Multi-Level Dijkstra) algorithm with preprocess
 ├── api/
 │   ├── Dockerfile
 │   ├── package.json
-│   └── server.js              # Hono API server
+│   └── server.js              # Hono API server (shared by both)
 └── cloudflare/
     ├── Dockerfile             # Single-container image for CF
-    ├── start.sh               # Startup script (processes + runs all)
+    ├── start.sh               # Startup script
     ├── package.json
     └── src/
-        └── index.js           # Cloudflare Worker (routes to container)
+        └── index.js           # Cloudflare Worker
 ```
 
-## Map Updates
-
-Map data updates automatically on the 1st of every month at 3:00 AM. The `map-updater` container downloads fresh data from [Geofabrik](https://download.geofabrik.de/africa/ethiopia-latest.osm.pbf), reprocesses all profiles, and restarts the routing services.
-
-To run manually:
-```bash
-docker exec osrm-map-updater /usr/local/bin/update-map.sh
-```
-
-## Updating the API Code
-
-```bash
-docker compose up -d --build api
-```
-
-## Stopping
-
-```bash
-docker compose down
-```
-
-To also remove processed map data:
-```bash
-docker compose down
-rm -rf osrm-data/
-```
-
----
-
-## Deploy to Cloudflare Containers
-
-Run the same OSRM stack on [Cloudflare Containers](https://developers.cloudflare.com/containers/) — serverless, no infrastructure to manage.
-
-### Prerequisites
-
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) installed
-- Cloudflare account (Workers Paid plan required for Containers)
-
-### Setup
-
-```bash
-cd cloudflare
-npm install
-```
-
-### Deploy
-
-```bash
-npx wrangler deploy
-```
-
-This will:
-1. Build a single Docker image with all 4 OSRM profiles + the API
-2. Push it to Cloudflare's container registry
-3. Deploy the Worker that routes to the container
-
-### How it works
-
-On Cloudflare, everything runs in **one container** (no docker-compose):
-
-```
-┌──────────────────────────────────────────────┐
-│            Cloudflare Container              │
-│                                              │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐        │
-│  │ OSRM    │ │ OSRM    │ │ OSRM    │  ...   │
-│  │ car     │ │ bike    │ │ foot    │        │
-│  │ :5001   │ │ :5002   │ │ :5003   │        │
-│  └────┬────┘ └────┬────┘ └────┬────┘        │
-│       └───────────┼───────────┘              │
-│             ┌─────┴─────┐                    │
-│             │ Hono API  │                    │
-│             │   :3000   │                    │
-│             └───────────┘                    │
-└──────────────────────────────────────────────┘
-                     ▲
-                     │ :3000
-            ┌────────┴────────┐
-            │ Cloudflare      │
-            │ Worker          │
-            │ (routes/health) │
-            └─────────────────┘
-```
-
-### Instance type
-
-Uses `standard-4` (4 vCPU, 12GB RAM, 20GB disk) to fit all 4 OSRM profiles. First request takes ~5 min while data is downloaded and processed. Subsequent requests are fast.
-
-### Configuration
-
-Edit `wrangler.jsonc` to change:
-- `instance_type` — scale up/down (see [limits](https://developers.cloudflare.com/containers/platform-details/limits/))
-- `max_instances` — number of container instances
-- `sleepAfter` in `src/index.js` — idle timeout before container sleeps
-
-### Manual deploy
-
-```bash
-cd cloudflare
-npx wrangler deploy
-```
-
-### Test
-
-```bash
-# After deployment, your Worker URL will be:
-# https://osrm-api.<your-subdomain>.workers.dev
-
-curl "https://osrm-api.<your-subdomain>.workers.dev/distance?from=38.7577,9.0128&to=38.7891,9.0054&vehicle=car"
-```
+The API code (`api/server.js`) is **shared** between Docker and Cloudflare. Only the deployment mechanism differs.

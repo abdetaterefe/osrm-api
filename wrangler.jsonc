@@ -26,5 +26,9 @@
       "new_sqlite_classes": ["OsrmContainer"],
       "tag": "v1"
     }
-  ]
+  ],
+
+  "triggers": {
+    "crons": ["0 3 1 * *"]
+  }
 }
