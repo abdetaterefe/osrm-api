@@ -1,4 +1,8 @@
 osrm-data/
 node_modules/
+api/node_modules/
+cloudflare/node_modules/
+api/dist/
+cloudflare/dist/
 .git/
 *.log

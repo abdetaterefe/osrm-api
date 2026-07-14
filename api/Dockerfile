@@ -1,9 +1,12 @@
 FROM node:20-alpine
+RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
-COPY api/package*.json ./
-RUN npm install --production
-COPY api/tsconfig.json ./
-COPY api/src/ ./src/
-RUN npx tsc
+COPY pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY api/package*.json ./api/
+COPY cloudflare/package*.json ./cloudflare/
+RUN pnpm install --frozen-lockfile
+COPY api/tsconfig.json ./api/
+COPY api/src/ ./api/src/
+RUN pnpm --filter osrm-api build
 EXPOSE 3000
-CMD ["node", "dist/server.js"]
+CMD ["node", "api/dist/server.js"]

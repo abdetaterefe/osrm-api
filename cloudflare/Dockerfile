@@ -5,7 +5,8 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 
 WORKDIR /app
 
-COPY api/package*.json pnpm-workspace.yaml ./
+COPY pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY api/package*.json ./api/
 COPY cloudflare/package*.json ./cloudflare/
 RUN pnpm install --frozen-lockfile
 

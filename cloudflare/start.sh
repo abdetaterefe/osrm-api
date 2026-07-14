@@ -51,4 +51,4 @@ echo "[init] Waiting for OSRM instances..."
 sleep 3
 
 echo "[init] Starting API server..."
-exec node /app/server.js
+exec node /app/api/dist/server.js
