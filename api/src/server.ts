@@ -7,7 +7,7 @@ type Vehicle = "car" | "motorcycle" | "bicycle" | "foot";
 interface OsrmRoute {
   distance: number;
   duration: number;
-  geometry: GeoJSON.LineString;
+  geometry: { type: string; coordinates: number[][] };
   legs: OsrmLeg[];
 }
 
@@ -22,7 +22,7 @@ interface OsrmStep {
   duration: number;
   maneuver?: { type: string; modifier?: string };
   name: string;
-  geometry: GeoJSON.LineString;
+  geometry: { type: string; coordinates: number[][] };
 }
 
 interface OsrmRouteResponse {
