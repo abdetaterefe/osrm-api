@@ -1,0 +1,111 @@
+services:
+  init:
+    build:
+      context: .
+      dockerfile: Dockerfile.init
+    container_name: osrm-init
+    command: /usr/local/bin/init.sh
+    volumes:
+      - ./osrm-data:/data
+      - ./profiles:/profiles
+    restart: "no"
+
+  osrm-car:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    container_name: osrm-car
+    command: osrm-routed --algorithm mld --max-table-size 10000 /data/ethiopia-car.osrm
+    volumes:
+      - ./osrm-data:/data
+    ports:
+      - "5001:5000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  osrm-bicycle:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    container_name: osrm-bicycle
+    command: osrm-routed --algorithm mld --max-table-size 10000 /data/ethiopia-bicycle.osrm
+    volumes:
+      - ./osrm-data:/data
+    ports:
+      - "5002:5000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  osrm-foot:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    container_name: osrm-foot
+    command: osrm-routed --algorithm mld --max-table-size 10000 /data/ethiopia-foot.osrm
+    volumes:
+      - ./osrm-data:/data
+    ports:
+      - "5003:5000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  osrm-motorcycle:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    container_name: osrm-motorcycle
+    command: osrm-routed --algorithm mld --max-table-size 10000 /data/ethiopia-motorcycle.osrm
+    volumes:
+      - ./osrm-data:/data
+    ports:
+      - "5004:5000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: osrm-api
+    ports:
+      - "3000:3000"
+    environment:
+      - OSRM_CAR=http://osrm-car:5000
+      - OSRM_BICYCLE=http://osrm-bicycle:5000
+      - OSRM_FOOT=http://osrm-foot:5000
+      - OSRM_MOTORCYCLE=http://osrm-motorcycle:5000
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  map-updater:
+    build:
+      context: .
+      dockerfile: Dockerfile.init
+    container_name: osrm-map-updater
+    command: /usr/local/bin/scheduler.sh
+    volumes:
+      - ./osrm-data:/data
+      - ./profiles:/profiles
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped

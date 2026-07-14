@@ -1,0 +1,9 @@
+FROM ghcr.io/project-osrm/osrm-backend:v5.27.1
+
+RUN apt-get update && apt-get install -y wget docker.io && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/init.sh /usr/local/bin/init.sh
+COPY scripts/update-map.sh /usr/local/bin/update-map.sh
+COPY scripts/scheduler.sh /usr/local/bin/scheduler.sh
+COPY profiles/ /profiles/
+RUN chmod +x /usr/local/bin/init.sh /usr/local/bin/update-map.sh /usr/local/bin/scheduler.sh
