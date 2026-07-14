@@ -1,0 +1,10 @@
+{
+  "name": "osrm-api",
+  "private": true,
+  "scripts": {
+    "build": "pnpm --filter osrm-api build",
+    "dev": "pnpm --filter osrm-api dev",
+    "typecheck": "pnpm --filter osrm-api typecheck",
+    "deploy": "pnpm --filter osrm-api-cloudflare deploy"
+  }
+}

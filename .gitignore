@@ -3,12 +3,15 @@ osrm-data/
 
 # Node
 node_modules/
-api/node_modules/
-cloudflare/node_modules/
+.pnpm-store/
 
 # Build output
 api/dist/
 cloudflare/dist/
+
+# Lock files
+package-lock.json
+yarn.lock
 
 # Logs
 *.log

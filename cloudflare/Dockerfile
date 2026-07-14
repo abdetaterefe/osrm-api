@@ -1,16 +1,17 @@
 FROM ghcr.io/project-osrm/osrm-backend:v5.27.1
 
 RUN apt-get update && apt-get install -y wget nodejs npm && rm -rf /var/lib/apt/lists/*
+RUN corepack enable && corepack prepare pnpm@latest --activate
 
 WORKDIR /app
 
-COPY api/package*.json ./
-RUN npm install
+COPY api/package*.json pnpm-workspace.yaml ./
+COPY cloudflare/package*.json ./cloudflare/
+RUN pnpm install --frozen-lockfile
 
-COPY api/tsconfig.json ./
-COPY api/src/ ./src/
-RUN npm run build
-RUN npm prune --production
+COPY api/tsconfig.json ./api/
+COPY api/src/ ./api/src/
+RUN pnpm --filter osrm-api build
 
 COPY profiles/ /profiles/
 COPY cloudflare/start.sh /start.sh

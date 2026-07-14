@@ -59,9 +59,8 @@ docker compose down
 ### Setup & Deploy
 
 ```bash
-cd cloudflare
-npm install
-npx wrangler deploy
+pnpm install
+pnpm deploy
 ```
 
 This will:
@@ -207,6 +206,8 @@ Response:
 ## Project Structure
 
 ```
+├── package.json              # Root workspace (pnpm)
+├── pnpm-workspace.yaml       # Monorepo config
 ├── docker-compose.yml        # Docker deployment (multi-container)
 ├── Dockerfile.init            # Init container image for Docker
 ├── wrangler.jsonc             # Cloudflare Containers config
