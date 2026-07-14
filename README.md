@@ -139,21 +139,28 @@ Each OSRM instance runs the MLD (Multi-Level Dijkstra) algorithm with preprocess
 ## Project Structure
 
 ```
-├── docker-compose.yml      # Orchestrates all services
-├── Dockerfile.init          # Init container image
+├── docker-compose.yml        # Docker deployment (multi-container)
+├── Dockerfile.init            # Init container image
+├── wrangler.jsonc             # Cloudflare Containers config
 ├── profiles/
-│   ├── car.lua              # Car routing profile
-│   ├── motorcycle.lua       # Motorcycle profile (faster urban speeds)
-│   ├── bicycle.lua          # Bicycle profile
-│   └── foot.lua             # Walking profile
+│   ├── car.lua                # Car routing profile
+│   ├── motorcycle.lua         # Motorcycle profile (faster urban speeds)
+│   ├── bicycle.lua            # Bicycle profile
+│   └── foot.lua               # Walking profile
 ├── scripts/
-│   ├── init.sh              # Downloads OSM data + processes profiles
-│   ├── update-map.sh        # Monthly map update script
-│   └── scheduler.sh         # Cron scheduler for auto-updates
-└── api/
-    ├── Dockerfile
+│   ├── init.sh                # Downloads OSM data + processes profiles
+│   ├── update-map.sh          # Monthly map update script
+│   └── scheduler.sh           # Cron scheduler for auto-updates
+├── api/
+│   ├── Dockerfile
+│   ├── package.json
+│   └── server.js              # Hono API server
+└── cloudflare/
+    ├── Dockerfile             # Single-container image for CF
+    ├── start.sh               # Startup script (processes + runs all)
     ├── package.json
-    └── server.js            # Hono API server
+    └── src/
+        └── index.js           # Cloudflare Worker (routes to container)
 ```
 
 ## Map Updates
@@ -181,4 +188,88 @@ To also remove processed map data:
 ```bash
 docker compose down
 rm -rf osrm-data/
+```
+
+---
+
+## Deploy to Cloudflare Containers
+
+Run the same OSRM stack on [Cloudflare Containers](https://developers.cloudflare.com/containers/) — serverless, no infrastructure to manage.
+
+### Prerequisites
+
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) installed
+- Cloudflare account (Workers Paid plan required for Containers)
+
+### Setup
+
+```bash
+cd cloudflare
+npm install
+```
+
+### Deploy
+
+```bash
+npx wrangler deploy
+```
+
+This will:
+1. Build a single Docker image with all 4 OSRM profiles + the API
+2. Push it to Cloudflare's container registry
+3. Deploy the Worker that routes to the container
+
+### How it works
+
+On Cloudflare, everything runs in **one container** (no docker-compose):
+
+```
+┌──────────────────────────────────────────────┐
+│            Cloudflare Container              │
+│                                              │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐        │
+│  │ OSRM    │ │ OSRM    │ │ OSRM    │  ...   │
+│  │ car     │ │ bike    │ │ foot    │        │
+│  │ :5001   │ │ :5002   │ │ :5003   │        │
+│  └────┬────┘ └────┬────┘ └────┬────┘        │
+│       └───────────┼───────────┘              │
+│             ┌─────┴─────┐                    │
+│             │ Hono API  │                    │
+│             │   :3000   │                    │
+│             └───────────┘                    │
+└──────────────────────────────────────────────┘
+                     ▲
+                     │ :3000
+            ┌────────┴────────┐
+            │ Cloudflare      │
+            │ Worker          │
+            │ (routes/health) │
+            └─────────────────┘
+```
+
+### Instance type
+
+Uses `standard-4` (4 vCPU, 12GB RAM, 20GB disk) to fit all 4 OSRM profiles. First request takes ~5 min while data is downloaded and processed. Subsequent requests are fast.
+
+### Configuration
+
+Edit `wrangler.jsonc` to change:
+- `instance_type` — scale up/down (see [limits](https://developers.cloudflare.com/containers/platform-details/limits/))
+- `max_instances` — number of container instances
+- `sleepAfter` in `src/index.js` — idle timeout before container sleeps
+
+### Manual deploy
+
+```bash
+cd cloudflare
+npx wrangler deploy
+```
+
+### Test
+
+```bash
+# After deployment, your Worker URL will be:
+# https://osrm-api.<your-subdomain>.workers.dev
+
+curl "https://osrm-api.<your-subdomain>.workers.dev/distance?from=38.7577,9.0128&to=38.7891,9.0054&vehicle=car"
 ```

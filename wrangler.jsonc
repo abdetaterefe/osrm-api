@@ -1,0 +1,30 @@
+{
+  "name": "osrm-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-14",
+
+  "containers": [
+    {
+      "class_name": "OsrmContainer",
+      "image": "./cloudflare/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "standard-4"
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "OSRM_CONTAINER",
+        "class_name": "OsrmContainer"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "new_sqlite_classes": ["OsrmContainer"],
+      "tag": "v1"
+    }
+  ]
+}
