@@ -5,9 +5,13 @@ RUN apt-get update && apt-get install -y wget nodejs npm && rm -rf /var/lib/apt/
 WORKDIR /app
 
 COPY api/package*.json ./
-RUN npm install --omit=dev
+RUN npm install
 
-COPY api/server.js ./
+COPY api/tsconfig.json ./
+COPY api/src/ ./src/
+RUN npm run build
+RUN npm prune --production
+
 COPY profiles/ /profiles/
 COPY cloudflare/start.sh /start.sh
 RUN chmod +x /start.sh

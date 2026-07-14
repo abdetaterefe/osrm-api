@@ -3,13 +3,17 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "build": "tsc",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@cloudflare/containers": "^0.3.7"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260714.1",
+    "typescript": "^5.8.3",
     "wrangler": "^4.110.0"
   }
 }

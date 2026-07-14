@@ -2,7 +2,13 @@
 osrm-data/
 
 # Node
+node_modules/
 api/node_modules/
+cloudflare/node_modules/
+
+# Build output
+api/dist/
+cloudflare/dist/
 
 # Logs
 *.log

@@ -222,13 +222,16 @@ Response:
 ├── api/
 │   ├── Dockerfile
 │   ├── package.json
-│   └── server.js              # Hono API server (shared by both)
+│   ├── tsconfig.json
+│   └── src/
+│       └── server.ts          # Hono API server (shared by both)
 └── cloudflare/
     ├── Dockerfile             # Single-container image for CF
     ├── start.sh               # Startup script
     ├── package.json
+    ├── tsconfig.json
     └── src/
-        └── index.js           # Cloudflare Worker
+        └── index.ts           # Cloudflare Worker
 ```
 
-The API code (`api/server.js`) is **shared** between Docker and Cloudflare. Only the deployment mechanism differs.
+The API code (`api/src/server.ts`) is **shared** between Docker and Cloudflare. Only the deployment mechanism differs.

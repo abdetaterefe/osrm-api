@@ -2,23 +2,73 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import http from "http";
 
-const OSRM_URLS = {
+type Vehicle = "car" | "motorcycle" | "bicycle" | "foot";
+
+interface OsrmRoute {
+  distance: number;
+  duration: number;
+  geometry: GeoJSON.LineString;
+  legs: OsrmLeg[];
+}
+
+interface OsrmLeg {
+  distance: number;
+  duration: number;
+  steps?: OsrmStep[];
+}
+
+interface OsrmStep {
+  distance: number;
+  duration: number;
+  maneuver?: { type: string; modifier?: string };
+  name: string;
+  geometry: GeoJSON.LineString;
+}
+
+interface OsrmRouteResponse {
+  code: string;
+  routes: OsrmRoute[];
+  waypoints: OsrmWaypoint[];
+}
+
+interface OsrmTableResponse {
+  code: string;
+  distances: number[][];
+  durations: number[][];
+  waypoints: OsrmWaypoint[];
+}
+
+interface OsrmWaypoint {
+  location: [number, number];
+  name: string;
+}
+
+interface DistanceResult {
+  distance_meters: number;
+  distance_km: number;
+  duration_seconds: number;
+  duration_minutes: number;
+}
+
+const OSRM_URLS: Record<Vehicle, string> = {
   car: process.env.OSRM_CAR || "http://localhost:5001",
   motorcycle: process.env.OSRM_MOTORCYCLE || "http://localhost:5004",
   bicycle: process.env.OSRM_BICYCLE || "http://localhost:5002",
   foot: process.env.OSRM_FOOT || "http://localhost:5003",
 };
 
-function osrmRequest(osrmUrl, path) {
+const VEHICLES = Object.keys(OSRM_URLS) as Vehicle[];
+
+function osrmRequest(osrmUrl: string, path: string): Promise<OsrmRouteResponse & OsrmTableResponse> {
   return new Promise((resolve, reject) => {
     const url = new URL(path, osrmUrl);
     http
       .get(url.toString(), (res) => {
         let data = "";
-        res.on("data", (chunk) => (data += chunk));
+        res.on("data", (chunk: Buffer) => (data += chunk));
         res.on("end", () => {
           try {
-            resolve(JSON.parse(data));
+            resolve(JSON.parse(data) as OsrmRouteResponse & OsrmTableResponse);
           } catch {
             reject(new Error("Invalid OSRM response"));
           }
@@ -28,16 +78,25 @@ function osrmRequest(osrmUrl, path) {
   });
 }
 
-function parseCoords(value) {
+function parseCoords(value: string): [number, number] | null {
   const parts = value.split(",").map(Number);
   if (parts.length !== 2 || parts.some(isNaN)) return null;
-  return parts;
+  return parts as [number, number];
 }
 
-function getOsrmUrl(vehicle) {
-  const url = OSRM_URLS[vehicle];
+function getOsrmUrl(vehicle: string): string | null {
+  const url = OSRM_URLS[vehicle as Vehicle];
   if (!url) return null;
   return url;
+}
+
+function formatDistance(meters: number): DistanceResult {
+  return {
+    distance_meters: meters,
+    distance_km: parseFloat((meters / 1000).toFixed(2)),
+    duration_seconds: 0,
+    duration_minutes: 0,
+  };
 }
 
 const app = new Hono();
@@ -45,7 +104,7 @@ const app = new Hono();
 app.get("/health", (c) =>
   c.json({
     status: "ok",
-    profiles: Object.keys(OSRM_URLS),
+    profiles: VEHICLES,
   })
 );
 
@@ -63,7 +122,7 @@ app.get("/route", async (c) => {
   const osrmUrl = getOsrmUrl(vehicle);
   if (!osrmUrl) {
     return c.json(
-      { error: `unknown vehicle '${vehicle}'. supported: ${Object.keys(OSRM_URLS).join(", ")}` },
+      { error: `unknown vehicle '${vehicle}'. supported: ${VEHICLES.join(", ")}` },
       400
     );
   }
@@ -135,7 +194,7 @@ app.get("/distance", async (c) => {
   const osrmUrl = getOsrmUrl(vehicle);
   if (!osrmUrl) {
     return c.json(
-      { error: `unknown vehicle '${vehicle}'. supported: ${Object.keys(OSRM_URLS).join(", ")}` },
+      { error: `unknown vehicle '${vehicle}'. supported: ${VEHICLES.join(", ")}` },
       400
     );
   }
@@ -181,7 +240,7 @@ app.get("/compare", async (c) => {
     return c.json({ error: "coords must be lon,lat numbers" }, 400);
   }
 
-  const results = {};
+  const results: Record<string, DistanceResult | { error: string }> = {};
   for (const [vehicle, osrmUrl] of Object.entries(OSRM_URLS)) {
     try {
       const path = `/route/v1/driving/${fromCoords[0]},${fromCoords[1]};${toCoords[0]},${toCoords[1]}?overview=false`;
@@ -207,18 +266,18 @@ app.get("/compare", async (c) => {
 });
 
 app.post("/matrix", async (c) => {
-  const body = await c.req.json();
+  const body = await c.req.json<{ coordinates?: [number, number][]; vehicle?: string }>();
   const { coordinates, vehicle } = body;
 
   if (!Array.isArray(coordinates) || coordinates.length < 2) {
     return c.json({ error: "coordinates array with at least 2 [lon,lat] pairs required" }, 400);
   }
 
-  const v = vehicle || "car";
+  const v = (vehicle || "car") as Vehicle;
   const osrmUrl = getOsrmUrl(v);
   if (!osrmUrl) {
     return c.json(
-      { error: `unknown vehicle '${v}'. supported: ${Object.keys(OSRM_URLS).join(", ")}` },
+      { error: `unknown vehicle '${v}'. supported: ${VEHICLES.join(", ")}` },
       400
     );
   }
