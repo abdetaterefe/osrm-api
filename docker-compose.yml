@@ -9,6 +9,10 @@ services:
       - ./osrm-data:/data
       - ./profiles:/profiles
     restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 8G
 
   osrm-car:
     image: ghcr.io/project-osrm/osrm-backend:v5.27.1
