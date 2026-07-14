@@ -1,0 +1,4 @@
+osrm-data/
+node_modules/
+.git/
+*.log

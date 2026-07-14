@@ -80,8 +80,8 @@ services:
 
   api:
     build:
-      context: ./api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: api/Dockerfile
     container_name: osrm-api
     ports:
       - "3000:3000"
