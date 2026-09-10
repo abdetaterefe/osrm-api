@@ -25,13 +25,12 @@ fi
 # Start osrm-routed in background
 echo "Starting osrm-routed (bicycle)..."
 osrm-routed --algorithm mld --max-table-size 1000 /data/ethiopia-bicycle.osrm --port 5000 &
-OSRM_PID=$!
 
-# Wait for OSRM to be responsive
+# Wait for OSRM to be responsive on port 5000 using bash built-in /dev/tcp
 echo "Waiting for OSRM backend to initialize..."
 for i in {1..30}; do
-  if curl -s -f "http://localhost:5000/route/v1/driving/38.7577,9.0128;38.7578,9.0129?overview=false" > /dev/null 2>&1; then
-    echo "OSRM backend is ready!"
+  if (echo > /dev/tcp/localhost/5000) >/dev/null 2>&1; then
+    echo "OSRM backend is ready and listening on port 5000!"
     break
   fi
   sleep 0.5
