@@ -35,6 +35,7 @@ jobs:
               rm -f /data/*.osm.pbf || true
             "
           rm -f ethiopia-latest.osm.pbf
+          sudo chmod -R 777 osrm-data
           tar -czf ethiopia-bicycle-osrm.tar.gz -C osrm-data .
 
       - name: Publish Map to GitHub Release
