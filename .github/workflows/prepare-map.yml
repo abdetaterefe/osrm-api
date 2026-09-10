@@ -24,16 +24,17 @@ jobs:
       - name: Process Map with OSRM (Bicycle Profile)
         run: |
           mkdir -p osrm-data
+          cp ethiopia-latest.osm.pbf osrm-data/ethiopia-bicycle.osm.pbf
           docker run --rm \
             -v $(pwd)/osrm-data:/data \
             -v $(pwd)/profiles:/profiles \
-            -v $(pwd)/ethiopia-latest.osm.pbf:/data/ethiopia-bicycle.osm.pbf \
             ghcr.io/project-osrm/osrm-backend:v5.27.1 bash -c "
               osrm-extract -p /profiles/bicycle.lua /data/ethiopia-bicycle.osm.pbf && \
               osrm-partition /data/ethiopia-bicycle.osrm && \
               osrm-customize /data/ethiopia-bicycle.osrm && \
-              rm -f /data/*.osm.pbf
+              rm -f /data/*.osm.pbf || true
             "
+          rm -f ethiopia-latest.osm.pbf
           tar -czf ethiopia-bicycle-osrm.tar.gz -C osrm-data .
 
       - name: Publish Map to GitHub Release
