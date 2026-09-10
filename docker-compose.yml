@@ -1,65 +1,19 @@
 services:
-  init:
+  osrm:
     build:
       context: .
-      dockerfile: Dockerfile.init
-    container_name: osrm-init
-    command: /usr/local/bin/init.sh
-    volumes:
-      - ./osrm-data:/data
-    restart: "no"
-
-  osrm-bicycle:
-    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
-    container_name: osrm-bicycle
-    command: osrm-routed --algorithm mld --max-table-size 1000 /data/ethiopia-bicycle.osrm
-    volumes:
-      - ./osrm-data:/data
-    ports:
-      - "5000:5000"
-    depends_on:
-      init:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/5000'"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-
-  api:
-    build:
-      context: .
-      dockerfile: api/Dockerfile
-    container_name: osrm-api
+      dockerfile: Dockerfile
+    container_name: osrm-bicycle-service
     ports:
       - "3000:3000"
     environment:
-      - OSRM_URL=http://osrm-bicycle:5000
       - PORT=3000
-    depends_on:
-      osrm-bicycle:
-        condition: service_healthy
+    volumes:
+      - ./osrm-data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
-
-  # Optional background updater container (uncomment if VPS has sufficient RAM, requires ~30MB)
-  # map-updater:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.init
-  #   container_name: osrm-map-updater
-  #   command: /usr/local/bin/scheduler.sh
-  #   volumes:
-  #     - ./osrm-data:/data
-  #     - /var/run/docker.sock:/var/run/docker.sock
-  #   depends_on:
-  #     init:
-  #       condition: service_completed_successfully
-  #   restart: unless-stopped
+      start_period: 15s

@@ -1,98 +1,81 @@
-# OSRM Bicycle Routing API (Ethiopia)
+# OSRM Bicycle Routing Service (Ethiopia)
 
-Lightweight, high-performance routing and distance calculation service for Ethiopia, powered by [OSRM](https://github.com/Project-OSRM/osrm-backend) with a lean **Go** API. Optimized to run reliably even on small VPS instances with **512 MB RAM**.
+High-performance, ultra-lean routing and distance calculation service for Ethiopia, built with **OSRM** and **100% Go**. Designed to work naturally on **Railway**, **Render**, **Fly.io**, or **any VPS with as little as 512 MB RAM**.
+
+---
 
 ## Features
 
-- **Bicycle profile**: Tuned specifically for bike routing across urban and rural Ethiopia.
-- **Ultra-low memory**: Go API uses only **~10–15 MB RAM** (replacing heavy Node.js runtimes).
-- **Real road routing** using OpenStreetMap data for Ethiopia from Geofabrik.
-- **True health checks**: `/health` actively verifies backend OSRM connectivity (returns 503 if backend is down).
-- **Fast cold-starts**: Docker image built on minimal Alpine Linux.
+- **100% Go + OSRM**: Zero Node.js, zero pnpm, zero npm dependencies.
+- **Ultra-lean memory**: The Go API consumes only **~12 MB RAM**; the entire runtime container uses **~250 MB RAM** total.
+- **Build-time Map Compilation**: Map data is extracted and partitioned during `docker build` (using high-memory build runners). The container starts in ~2 seconds at runtime with zero risk of OOM kills.
+- **True Health Checks**: `/health` actively verifies that the OSRM backend is healthy (returns HTTP 200 when ready, 503 if degraded).
+- **Run Anywhere**: Deploy seamlessly via Railway, Docker Compose, or raw Docker.
 
 ---
 
-## Memory Footprint (512 MB Plan Ready)
+## Deployment Options
+
+### Option 1: Railway (Zero-config)
+
+The project includes a root `Dockerfile` and `railway.json`:
+1. Connect this GitHub repository to your Railway project.
+2. Railway automatically detects `railway.json` and builds the `Dockerfile`.
+3. The build phase downloads and compiles the Ethiopia bicycle map.
+4. The service deploys and binds to `$PORT` automatically.
+
+---
+
+### Option 2: VPS (Docker Compose)
+
+On your VPS:
+
+```bash
+# Clone the repository
+git clone https://github.com/abdetaterefe/osrm-api.git
+cd osrm-api
+
+# Start the service
+docker compose up -d --build
+
+# View logs
+docker compose logs -f
+```
+
+---
+
+### Option 3: VPS (Standalone Docker)
+
+```bash
+docker build -t osrm-bicycle .
+docker run -d -p 3000:3000 --name osrm-bicycle osrm-bicycle
+```
+
+---
+
+## Memory Footprint (512 MB Safe)
 
 | Component | RAM Usage |
 | :--- | :--- |
-| OS / Kernel / Docker runtime | ~90 MB |
 | `osrm-routed` (Ethiopia Bicycle MLD) | ~230 MB |
 | Go API Server | **~12 MB** |
-| **Total Active** | **~332 MB** |
-| **Safety Headroom** | **~180 MB (Free buffer on 512MB VPS)** |
-
----
-
-## Deploying on a 512 MB VPS
-
-Because `osrm-extract` and `osrm-partition` require 2GB–4GB of RAM during map compilation, **do not compile the map on a 512 MB machine without swap**.
-
-### Method 1: Pre-process on your PC and copy to VPS (Recommended)
-
-1. **Extract map data on your local PC or laptop:**
-   ```bash
-   mkdir -p osrm-data
-   docker compose run --rm init
-   ```
-   This downloads Ethiopia OSM data (~135MB) and compiles `osrm-data/ethiopia-bicycle.osrm.*` (~1–2 minutes).
-
-2. **Copy the processed data directory to your VPS:**
-   ```bash
-   rsync -avzP ./osrm-data/ user@<vps-ip>:/path/to/osrm-api/osrm-data/
-   ```
-
-3. **Start the service on your VPS:**
-   ```bash
-   docker compose up -d
-   ```
-   The `init` container will detect that `.osrm.cells` and `.osrm.mldgr` already exist and skip compilation, starting `osrm-bicycle` and `api` immediately!
-
----
-
-### Method 2: Process directly on VPS using a Swapfile
-
-If you cannot pre-process locally, create a 2GB–4GB swapfile on your VPS first:
-
-```bash
-# 1. Create swapfile on VPS
-sudo fallocate -l 3G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-
-# 2. Start services (init will compile using swap space)
-docker compose up -d
-```
-
----
-
-## Stopping & Logs
-
-```bash
-# View live logs
-docker compose logs -f api
-docker compose logs -f osrm-bicycle
-
-# Stop services
-docker compose down
-```
+| OS / runtime overhead | ~20 MB |
+| **Total Active** | **~262 MB** |
+| **Safety Headroom on 512 MB Plan** | **~250 MB (Almost 50% free buffer)** |
 
 ---
 
 ## API Endpoints
 
-All endpoints run on `http://<vps-ip>:3000` (or `http://localhost:3000`).
-
 ### `GET /health`
 
-Actively checks if the OSRM backend is healthy and responding.
+Actively checks whether the OSRM backend is responding.
 
 ```bash
 curl http://localhost:3000/health
 ```
 
-Healthy response (HTTP 200):
+Healthy response (`200 OK`):
 ```json
 {
   "status": "ok",
@@ -101,7 +84,7 @@ Healthy response (HTTP 200):
 }
 ```
 
-Degraded response (HTTP 503) if OSRM process died:
+Degraded response (`503 Service Unavailable`):
 ```json
 {
   "status": "degraded",
@@ -130,30 +113,17 @@ Response:
 }
 ```
 
-| Param | Required | Default | Description |
-|---|---|---|---|
-| `from` | yes | — | `longitude,latitude` |
-| `to` | yes | — | `longitude,latitude` |
-| `vehicle` | no | `bicycle` | `bicycle` |
-
 ### `GET /route`
 
-Full route geometry and step-by-step turn instructions.
+Turn-by-turn maneuvers and full GeoJSON route geometry.
 
 ```bash
 curl "http://localhost:3000/route?from=38.7577,9.0128&to=38.7891,9.0054&steps=true"
 ```
 
-| Param | Required | Default | Description |
-|---|---|---|---|
-| `from` | yes | — | `longitude,latitude` |
-| `to` | yes | — | `longitude,latitude` |
-| `steps` | no | `false` | Turn-by-turn maneuvers |
-| `alternatives` | no | `false` | Return alternative routes |
-
 ### `POST /matrix`
 
-Distance/duration matrix for multiple coordinates.
+Compute distance and duration tables for multiple points.
 
 ```bash
 curl -X POST http://localhost:3000/matrix \
@@ -168,20 +138,19 @@ curl -X POST http://localhost:3000/matrix \
 ## Project Structure
 
 ```
-├── docker-compose.yml        # Docker compose (init, osrm-bicycle, Go api)
-├── Dockerfile.init            # Map pre-processing container image
+├── Dockerfile                # Unified multi-stage build (Go + OSRM + embedded map)
+├── docker-compose.yml        # Compose configuration for VPS
+├── railway.json              # Railway deployment & health check configuration
 ├── profiles/
-│   ├── bicycle.lua            # Bicycle routing profile
-│   ├── car.lua
-│   ├── foot.lua
-│   └── motorcycle.lua
+│   └── bicycle.lua           # OSRM bicycle routing profile
 ├── scripts/
-│   ├── init.sh                # Downloads Ethiopia OSM data & processes bicycle
-│   ├── update-map.sh          # Manual / scheduled map update script
-│   └── scheduler.sh           # Optional cron scheduler
+│   ├── entrypoint.sh         # Boots osrm-routed & Go API
+│   ├── init.sh               # Standalone map processor script
+│   ├── update-map.sh         # Map update script
+│   └── scheduler.sh          # Cron update helper
 └── api/
-    ├── main.go                # Ultra-light Go HTTP API (~12MB RAM)
-    ├── main_test.go           # Unit tests
-    ├── go.mod                 # Go module definition
-    └── Dockerfile             # Multi-stage Alpine container
+    ├── main.go               # Pure Go HTTP API (~12 MB RAM)
+    ├── main_test.go          # Unit tests
+    ├── go.mod                # Go module definition
+    └── Dockerfile            # Standalone API image (optional)
 ```
