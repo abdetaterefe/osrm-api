@@ -9,7 +9,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o api-server .
 
 # Download Ethiopia OSM data using Alpine's native wget (reliable TLS, zero apt dependencies)
 RUN echo "=== Downloading Ethiopia OSM map data ===" && \
-    wget -q --show-progress -O ethiopia-bicycle.osm.pbf https://download.geofabrik.de/africa/ethiopia-latest.osm.pbf
+    wget -O ethiopia-bicycle.osm.pbf https://download.geofabrik.de/africa/ethiopia-latest.osm.pbf
 
 # Stage 2: Unified OSRM Bicycle runtime container
 FROM ghcr.io/project-osrm/osrm-backend:v5.27.1
