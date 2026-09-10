@@ -1,6 +1,6 @@
 {
   "name": "osrm-api",
-  "main": "src/index.ts",
+  "main": "cloudflare/src/index.ts",
   "compatibility_date": "2026-07-14",
 
   "containers": [
@@ -8,7 +8,7 @@
       "class_name": "OsrmContainer",
       "image": "./cloudflare/Dockerfile",
       "max_instances": 1,
-      "instance_type": "standard-4"
+      "instance_type": "standard-1"
     }
   ],
 

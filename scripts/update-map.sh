@@ -5,8 +5,8 @@ DATA_DIR="/data"
 PROFILES_DIR="/profiles"
 OSM_URL="https://download.geofabrik.de/africa/ethiopia-latest.osm.pbf"
 OSM_FILE="$DATA_DIR/ethiopia-latest.osm.pbf"
-PROFILES=("car" "bicycle" "foot" "motorcycle")
-OSRM_CONTAINERS="osrm-car osrm-bicycle osrm-foot osrm-motorcycle"
+PROFILES=("bicycle")
+OSRM_CONTAINERS="osrm-bicycle"
 
 echo "=== Map Update: $(date) ==="
 
@@ -24,7 +24,7 @@ if [ "$NEW_HASH" = "$OLD_HASH" ]; then
   exit 0
 fi
 
-echo "New map data found, reprocessing..."
+echo "New map data found, reprocessing bicycle..."
 
 for profile in "${PROFILES[@]}"; do
   PREFIX="$DATA_DIR/ethiopia-${profile}"
@@ -50,7 +50,7 @@ done
 rm -f "${OSM_FILE}.old"
 touch "$DATA_DIR/.last-update"
 
-echo "Restarting OSRM routing containers..."
+echo "Restarting OSRM routing container..."
 for container in $OSRM_CONTAINERS; do
   docker restart "$container" 2>/dev/null && echo "  Restarted $container" || echo "  Could not restart $container"
 done

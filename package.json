@@ -2,9 +2,8 @@
   "name": "osrm-api",
   "private": true,
   "scripts": {
-    "build": "pnpm --filter osrm-api build",
-    "dev": "pnpm --filter osrm-api dev",
-    "typecheck": "pnpm --filter osrm-api typecheck",
-    "deploy": "pnpm --filter osrm-api-cloudflare deploy"
+    "build": "go build -C api -o bin/server .",
+    "test": "go test -v -C api ./...",
+    "deploy:cf": "pnpm --filter osrm-api-cloudflare exec wrangler deploy --config ../wrangler.jsonc"
   }
 }

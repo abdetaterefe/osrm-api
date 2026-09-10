@@ -1,204 +1,166 @@
-# OSRM Routing API
+# OSRM Bicycle Routing API (Ethiopia)
 
-Routing and distance calculation service for Ethiopia, powered by [OSRM](https://github.com/Project-OSRM/osrm-backend). Built for food delivery apps, ride-sharing, or any service that needs real road distance and duration.
+Lightweight, high-performance routing and distance calculation service for Ethiopia, powered by [OSRM](https://github.com/Project-OSRM/osrm-backend) with a lean **Go** API. Optimized to run reliably even on small VPS instances with **512 MB RAM**.
 
 ## Features
 
-- **4 vehicle profiles**: car, motorcycle, bicycle, foot
-- **Real road routing** using OpenStreetMap data for Ethiopia
-- **Monthly auto-update** for map data
-- **Run anywhere**: Docker (self-hosted) or Cloudflare Containers (serverless)
-- **Same API** for both — pick whichever fits your setup
-
-## Choose Your Platform
-
-| | Docker | Cloudflare Containers |
-|---|---|---|
-| **Cost** | Your own server | Workers Paid plan |
-| **Setup** | `docker compose up` | `npx wrangler deploy` |
-| **Cold start** | Instant | ~5 min (first time) |
-| **Monthly update** | Cron container | Worker cron trigger |
-| **Scaling** | Manual | Automatic |
+- **Bicycle profile**: Tuned specifically for bike routing across urban and rural Ethiopia.
+- **Ultra-low memory**: Go API uses only **~10–15 MB RAM** (replacing heavy Node.js runtimes).
+- **Real road routing** using OpenStreetMap data for Ethiopia from Geofabrik.
+- **True health checks**: `/health` actively verifies backend OSRM connectivity (returns 503 if backend is down).
+- **Fast cold-starts**: Docker image built on minimal Alpine Linux.
 
 ---
 
-## Docker (Self-Hosted)
+## Memory Footprint (512 MB Plan Ready)
 
-### Quick Start
+| Component | RAM Usage |
+| :--- | :--- |
+| OS / Kernel / Docker runtime | ~90 MB |
+| `osrm-routed` (Ethiopia Bicycle MLD) | ~230 MB |
+| Go API Server | **~12 MB** |
+| **Total Active** | **~332 MB** |
+| **Safety Headroom** | **~180 MB (Free buffer on 512MB VPS)** |
+
+---
+
+## Deploying on a 512 MB VPS
+
+Because `osrm-extract` and `osrm-partition` require 2GB–4GB of RAM during map compilation, **do not compile the map on a 512 MB machine without swap**.
+
+### Method 1: Pre-process on your PC and copy to VPS (Recommended)
+
+1. **Extract map data on your local PC or laptop:**
+   ```bash
+   mkdir -p osrm-data
+   docker compose run --rm init
+   ```
+   This downloads Ethiopia OSM data (~135MB) and compiles `osrm-data/ethiopia-bicycle.osrm.*` (~1–2 minutes).
+
+2. **Copy the processed data directory to your VPS:**
+   ```bash
+   rsync -avzP ./osrm-data/ user@<vps-ip>:/path/to/osrm-api/osrm-data/
+   ```
+
+3. **Start the service on your VPS:**
+   ```bash
+   docker compose up -d
+   ```
+   The `init` container will detect that `.osrm.cells` and `.osrm.mldgr` already exist and skip compilation, starting `osrm-bicycle` and `api` immediately!
+
+---
+
+### Method 2: Process directly on VPS using a Swapfile
+
+If you cannot pre-process locally, create a 2GB–4GB swapfile on your VPS first:
 
 ```bash
+# 1. Create swapfile on VPS
+sudo fallocate -l 3G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+
+# 2. Start services (init will compile using swap space)
 docker compose up -d
 ```
 
-On first run, it downloads Ethiopia OSM data (~133MB) and processes it for all profiles (~5 min). After that, services start automatically.
+---
 
-### Monthly Map Updates
-
-Automatic on the 1st of every month at 3:00 AM. The `map-updater` container downloads fresh data from [Geofabrik](https://download.geofabrik.de/africa/ethiopia-latest.osm.pbf), reprocesses all profiles, and restarts the routing services.
-
-To run manually:
-```bash
-docker exec osrm-map-updater /usr/local/bin/update-map.sh
-```
-
-### Stopping
+## Stopping & Logs
 
 ```bash
+# View live logs
+docker compose logs -f api
+docker compose logs -f osrm-bicycle
+
+# Stop services
 docker compose down
 ```
 
 ---
 
-## Cloudflare Containers (Serverless)
-
-### Prerequisites
-
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) installed
-- Cloudflare account (Workers Paid plan required for Containers)
-
-### Setup & Deploy
-
-```bash
-pnpm install
-pnpm deploy
-```
-
-This will:
-1. Build a single Docker image with all 4 OSRM profiles + the API
-2. Push it to Cloudflare's container registry
-3. Deploy the Worker that routes to the container
-
-### How it Works
-
-Everything runs in **one container** (no docker-compose):
-
-```
-┌──────────────────────────────────────────────┐
-│            Cloudflare Container              │
-│                                              │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐        │
-│  │ OSRM    │ │ OSRM    │ │ OSRM    │  ...   │
-│  │ car     │ │ bike    │ │ foot    │        │
-│  │ :5001   │ │ :5002   │ │ :5003   │        │
-│  └────┬────┘ └────┬────┘ └────┬────┘        │
-│       └───────────┼───────────┘              │
-│             ┌─────┴─────┐                    │
-│             │ Hono API  │                    │
-│             │   :3000   │                    │
-│             └───────────┘                    │
-└──────────────────────────────────────────────┘
-                     ▲
-                     │
-            ┌────────┴────────┐
-            │ Cloudflare      │
-            │ Worker          │
-            └─────────────────┘
-```
-
-### Monthly Map Updates
-
-Automatic via Cloudflare Workers cron trigger (`0 3 1 * *` — 1st of every month at 3:00 AM). The Worker restarts the container, which re-downloads and re-processes the map data.
-
-### Instance Type
-
-Uses `standard-4` (4 vCPU, 12GB RAM, 20GB disk). Edit `wrangler.jsonc` to change.
-
----
-
 ## API Endpoints
 
-All endpoints run on `http://localhost:3000` (Docker) or your Worker URL (Cloudflare).
+All endpoints run on `http://<vps-ip>:3000` (or `http://localhost:3000`).
 
 ### `GET /health`
+
+Actively checks if the OSRM backend is healthy and responding.
 
 ```bash
 curl http://localhost:3000/health
 ```
 
-### `GET /distance`
-
-Quick distance and duration between two points.
-
-```bash
-curl "http://localhost:3000/distance?from=38.7577,9.0128&to=38.7891,9.0054&vehicle=car"
+Healthy response (HTTP 200):
+```json
+{
+  "status": "ok",
+  "profiles": ["bicycle"],
+  "backend_status": "online"
+}
 ```
 
-| Param | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `from` | yes | — | `longitude,latitude` |
-| `to` | yes | — | `longitude,latitude` |
-| `vehicle` | no | `car` | `car`, `motorcycle`, `bicycle`, `foot` |
+Degraded response (HTTP 503) if OSRM process died:
+```json
+{
+  "status": "degraded",
+  "profiles": ["bicycle"],
+  "backend_status": "offline",
+  "error": "OSRM bicycle backend is unreachable"
+}
+```
+
+### `GET /distance`
+
+Quick road distance and duration between two coordinates for bicycles.
+
+```bash
+curl "http://localhost:3000/distance?from=38.7577,9.0128&to=38.7891,9.0054"
+```
 
 Response:
 ```json
 {
-  "vehicle": "car",
-  "distance_meters": 4804.6,
-  "distance_km": 4.8,
-  "duration_seconds": 298,
-  "duration_minutes": 5.0
+  "vehicle": "bicycle",
+  "distance_meters": 4090.5,
+  "distance_km": 4.09,
+  "duration_seconds": 1080,
+  "duration_minutes": 18.0
 }
 ```
+
+| Param | Required | Default | Description |
+|---|---|---|---|
+| `from` | yes | — | `longitude,latitude` |
+| `to` | yes | — | `longitude,latitude` |
+| `vehicle` | no | `bicycle` | `bicycle` |
 
 ### `GET /route`
 
-Full route with geometry and step-by-step directions.
+Full route geometry and step-by-step turn instructions.
 
 ```bash
-curl "http://localhost:3000/route?from=38.7577,9.0128&to=38.7891,9.0054&vehicle=motorcycle&steps=true"
+curl "http://localhost:3000/route?from=38.7577,9.0128&to=38.7891,9.0054&steps=true"
 ```
 
 | Param | Required | Default | Description |
-|-------|----------|---------|-------------|
+|---|---|---|---|
 | `from` | yes | — | `longitude,latitude` |
 | `to` | yes | — | `longitude,latitude` |
-| `vehicle` | no | `car` | `car`, `motorcycle`, `bicycle`, `foot` |
-| `steps` | no | `false` | Include turn-by-turn instructions |
+| `steps` | no | `false` | Turn-by-turn maneuvers |
 | `alternatives` | no | `false` | Return alternative routes |
-
-### `GET /compare`
-
-Compare distance and duration across all vehicle types at once.
-
-```bash
-curl "http://localhost:3000/compare?from=38.7577,9.0128&to=38.7891,9.0054"
-```
-
-Response:
-```json
-{
-  "from": [38.7577, 9.0128],
-  "to": [38.7891, 9.0054],
-  "results": {
-    "car":        { "distance_km": 4.8,  "duration_minutes": 5.0 },
-    "motorcycle": { "distance_km": 4.8,  "duration_minutes": 4.5 },
-    "bicycle":    { "distance_km": 4.09, "duration_minutes": 18.0 },
-    "foot":       { "distance_km": 4.06, "duration_minutes": 48.9 }
-  }
-}
-```
 
 ### `POST /matrix`
 
-Distance/duration matrix for multiple coordinates. Useful for finding the nearest driver.
+Distance/duration matrix for multiple coordinates.
 
 ```bash
 curl -X POST http://localhost:3000/matrix \
   -H "Content-Type: application/json" \
   -d '{
-    "coordinates": [[38.7577,9.0128], [38.7891,9.0054], [38.77,9.02]],
-    "vehicle": "motorcycle"
+    "coordinates": [[38.7577,9.0128], [38.7891,9.0054], [38.77,9.02]]
   }'
-```
-
-Response:
-```json
-{
-  "vehicle": "motorcycle",
-  "distances": [[0, 4804, 3200], [4804, 0, 2100], [3200, 2100, 0]],
-  "durations": [[0, 268, 180], [268, 0, 120], [180, 120, 0]],
-  "coordinates": [[38.7577,9.0128], [38.7891,9.0054], [38.77,9.02]]
-}
 ```
 
 ---
@@ -206,33 +168,20 @@ Response:
 ## Project Structure
 
 ```
-├── package.json              # Root workspace (pnpm)
-├── pnpm-workspace.yaml       # Monorepo config
-├── docker-compose.yml        # Docker deployment (multi-container)
-├── Dockerfile.init            # Init container image for Docker
-├── wrangler.jsonc             # Cloudflare Containers config
+├── docker-compose.yml        # Docker compose (init, osrm-bicycle, Go api)
+├── Dockerfile.init            # Map pre-processing container image
 ├── profiles/
-│   ├── car.lua                # Car routing profile
-│   ├── motorcycle.lua         # Motorcycle profile
-│   ├── bicycle.lua            # Bicycle profile
-│   └── foot.lua               # Walking profile
+│   ├── bicycle.lua            # Bicycle routing profile
+│   ├── car.lua
+│   ├── foot.lua
+│   └── motorcycle.lua
 ├── scripts/
-│   ├── init.sh                # Downloads OSM data + processes profiles
-│   ├── update-map.sh          # Monthly map update script
-│   └── scheduler.sh           # Cron scheduler for auto-updates
-├── api/
-│   ├── Dockerfile
-│   ├── package.json
-│   ├── tsconfig.json
-│   └── src/
-│       └── server.ts          # Hono API server (shared by both)
-└── cloudflare/
-    ├── Dockerfile             # Single-container image for CF
-    ├── start.sh               # Startup script
-    ├── package.json
-    ├── tsconfig.json
-    └── src/
-        └── index.ts           # Cloudflare Worker
+│   ├── init.sh                # Downloads Ethiopia OSM data & processes bicycle
+│   ├── update-map.sh          # Manual / scheduled map update script
+│   └── scheduler.sh           # Optional cron scheduler
+└── api/
+    ├── main.go                # Ultra-light Go HTTP API (~12MB RAM)
+    ├── main_test.go           # Unit tests
+    ├── go.mod                 # Go module definition
+    └── Dockerfile             # Multi-stage Alpine container
 ```
-
-The API code (`api/src/server.ts`) is **shared** between Docker and Cloudflare. Only the deployment mechanism differs.

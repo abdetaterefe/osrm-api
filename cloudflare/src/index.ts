@@ -7,7 +7,7 @@ interface Env {
 export class OsrmContainer extends Container<Env> {
   defaultPort = 3000;
   sleepAfter = "15m";
-  requiredPorts = [3000, 5001, 5002, 5003, 5004];
+  requiredPorts = [3000, 5000];
 
   override onStart(): void {
     console.log("OSRM container started");

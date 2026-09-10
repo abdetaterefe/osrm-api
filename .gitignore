@@ -4,13 +4,16 @@ osrm-data-test/
 *.pbf
 *.osrm*
 
-# Node
+# Go build artifacts
+api/bin/
+api/server
+api/*.exe
+
+# Node & Cloudflare
 node_modules/
 .pnpm-store/
-
-# Build output
-api/dist/
 cloudflare/dist/
+.wrangler/
 
 # Lock files
 package-lock.json

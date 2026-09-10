@@ -5,9 +5,9 @@ DATA_DIR="/data"
 PROFILES_DIR="/profiles"
 OSM_URL="https://download.geofabrik.de/africa/ethiopia-latest.osm.pbf"
 OSM_FILE="$DATA_DIR/ethiopia-latest.osm.pbf"
-PROFILES=("car" "bicycle" "foot" "motorcycle")
+PROFILES=("bicycle")
 
-echo "=== OSRM Init ==="
+echo "=== OSRM Init (Bicycle Only) ==="
 echo "Data dir: $DATA_DIR"
 echo "Profiles dir: $PROFILES_DIR"
 
@@ -20,7 +20,7 @@ else
   echo "OSM data already exists ($(du -h "$OSM_FILE" | cut -f1)), skipping download."
 fi
 
-# Extract + partition + customize for each profile
+# Extract + partition + customize for bicycle
 for profile in "${PROFILES[@]}"; do
   PREFIX="$DATA_DIR/ethiopia-${profile}"
 
