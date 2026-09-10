@@ -18,8 +18,8 @@ jobs:
 
       - name: Download Ethiopia OSM Data
         run: |
-          echo "Downloading Ethiopia OSM data in GitHub Cloud..."
-          wget -q --show-progress -O ethiopia-latest.osm.pbf https://download.geofabrik.de/africa/ethiopia-latest.osm.pbf
+          echo "Downloading Ethiopia OSM data in GitHub Cloud from OSM France mirror..."
+          wget -q --show-progress -O ethiopia-latest.osm.pbf https://download.openstreetmap.fr/extracts/africa/ethiopia-latest.osm.pbf
 
       - name: Process Map with OSRM (Bicycle Profile)
         run: |
