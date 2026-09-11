@@ -421,9 +421,12 @@ func handleMatrix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	waypoints := make([][2]float64, len(result.Waypoints))
-	for i, wp := range result.Waypoints {
-		waypoints[i] = wp.Location
+	waypoints := req.Coordinates
+	if len(result.Waypoints) > 0 {
+		waypoints = make([][2]float64, len(result.Waypoints))
+		for i, wp := range result.Waypoints {
+			waypoints[i] = wp.Location
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
