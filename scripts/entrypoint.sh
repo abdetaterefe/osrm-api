@@ -22,9 +22,12 @@ else
   exit 1
 fi
 
-# Start osrm-routed in background (bound explicitly to IPv4 0.0.0.0:5000)
-echo "Starting osrm-routed on 0.0.0.0:5000 with map: $MAP_PATH ..."
-osrm-routed --algorithm mld --max-table-size 1000 --ip 0.0.0.0 --port 5000 "$MAP_PATH" &
+# Ensure read-write permissions on map files (required by --mmap)
+chmod -R 777 /opt/osrm-data /data 2>/dev/null || true
+
+# Start osrm-routed in background with --mmap (memory-mapped from disk to fit in 512MB RAM)
+echo "Starting osrm-routed with --mmap on 0.0.0.0:5000 with map: $MAP_PATH ..."
+osrm-routed --algorithm mld --mmap --max-table-size 100 --ip 0.0.0.0 --port 5000 "$MAP_PATH" &
 OSRM_PID=$!
 
 # Wait for OSRM to be responsive on 127.0.0.1:5000 using bash built-in /dev/tcp
