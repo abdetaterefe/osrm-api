@@ -32,7 +32,7 @@ RUN tar -xzf /opt/osrm-data/ethiopia-bicycle-osrm.tar.gz -C /opt/osrm-data && \
     echo "=== Map unpack complete ==="
 
 ENV PORT=3000
-ENV OSRM_URL=http://localhost:5000
+ENV OSRM_URL=http://127.0.0.1:5000
 
 EXPOSE 3000
 

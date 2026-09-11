@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	osrmURL = getEnv("OSRM_URL", getEnv("OSRM_BICYCLE", "http://localhost:5000"))
+	osrmURL = getEnv("OSRM_URL", getEnv("OSRM_BICYCLE", "http://127.0.0.1:5000"))
 	port    = getEnv("PORT", "3000")
 )
 

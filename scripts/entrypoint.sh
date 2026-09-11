@@ -3,7 +3,7 @@ set -e
 
 PORT="${PORT:-3000}"
 export PORT
-export OSRM_URL="${OSRM_URL:-http://localhost:5000}"
+export OSRM_URL="${OSRM_URL:-http://127.0.0.1:5000}"
 
 echo "=== Starting OSRM Bicycle Routing Service ==="
 echo "Port: $PORT"
@@ -22,25 +22,32 @@ else
   exit 1
 fi
 
-# Start osrm-routed in background (options must precede the positional map path)
-echo "Starting osrm-routed (bicycle)..."
-osrm-routed --algorithm mld --max-table-size 1000 --port 5000 "$MAP_PATH" &
+# Start osrm-routed in background (bound explicitly to IPv4 0.0.0.0:5000)
+echo "Starting osrm-routed on 0.0.0.0:5000 with map: $MAP_PATH ..."
+osrm-routed --algorithm mld --max-table-size 1000 --ip 0.0.0.0 --port 5000 "$MAP_PATH" &
 OSRM_PID=$!
 
-# Wait for OSRM to be responsive on port 5000 using bash built-in /dev/tcp
+# Wait for OSRM to be responsive on 127.0.0.1:5000 using bash built-in /dev/tcp
 echo "Waiting for OSRM backend to initialize..."
 READY=0
-for i in {1..30}; do
-  if (echo > /dev/tcp/localhost/5000) >/dev/null 2>&1; then
-    echo "OSRM backend is ready and listening on port 5000!"
+for i in {1..40}; do
+  if (echo > /dev/tcp/127.0.0.1/5000) >/dev/null 2>&1; then
+    echo "OSRM backend is ready and listening on 127.0.0.1:5000!"
     READY=1
     break
   fi
+
+  if ! kill -0 $OSRM_PID 2>/dev/null; then
+    echo "FATAL: osrm-routed process ($OSRM_PID) exited unexpectedly!"
+    wait $OSRM_PID || true
+    exit 1
+  fi
+
   sleep 0.5
 done
 
 if [ "$READY" -ne 1 ]; then
-  echo "WARNING: OSRM did not bind to port 5000 within 15 seconds."
+  echo "WARNING: OSRM did not bind to port 5000 within 20 seconds. Starting API anyway..."
 fi
 
 # Start Go API server (takes over as PID 1)
