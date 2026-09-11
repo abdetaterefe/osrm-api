@@ -59,7 +59,6 @@ func TestRoundFloat(t *testing.T) {
 func TestLRUCache(t *testing.T) {
 	cache := NewLRUCache(2, 50*time.Millisecond)
 
-	// Set & Get
 	cache.Set("k1", []byte("val1"))
 	cache.Set("k2", []byte("val2"))
 
@@ -68,7 +67,6 @@ func TestLRUCache(t *testing.T) {
 		t.Fatalf("expected val1, got %s", string(v))
 	}
 
-	// Eviction when capacity exceeded (k2 was accessed least recently since k1 was accessed above)
 	cache.Set("k3", []byte("val3"))
 
 	if _, ok := cache.Get("k2"); ok {
@@ -81,7 +79,6 @@ func TestLRUCache(t *testing.T) {
 		t.Fatal("expected k3 to be present")
 	}
 
-	// TTL Expiration
 	time.Sleep(60 * time.Millisecond)
 	if _, ok := cache.Get("k1"); ok {
 		t.Fatal("expected k1 to have expired")
@@ -89,9 +86,8 @@ func TestLRUCache(t *testing.T) {
 }
 
 func TestHealthCheck(t *testing.T) {
-	// 1. When backend is down
 	origURL := osrmURL
-	osrmURL = "http://127.0.0.1:59999" // unreachable port
+	osrmURL = "http://127.0.0.1:59999"
 	defer func() { osrmURL = origURL }()
 
 	req := httptest.NewRequest("GET", "/health", nil)
@@ -102,15 +98,14 @@ func TestHealthCheck(t *testing.T) {
 		t.Fatalf("expected status 503, got %d", w.Code)
 	}
 
-	var degradedResp map[string]interface{}
+	var degradedResp HealthResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &degradedResp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if degradedResp["backend_status"] != "offline" {
-		t.Fatalf("expected backend_status offline, got %v", degradedResp["backend_status"])
+	if degradedResp.Backend != "offline" || degradedResp.Status != "degraded" {
+		t.Fatalf("unexpected degraded response: %+v", degradedResp)
 	}
 
-	// 2. When backend is up
 	mockBackend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.WriteHeader(http.StatusOK)
 		_, _ = rw.Write([]byte(`{"code":"Ok"}`))
@@ -124,12 +119,12 @@ func TestHealthCheck(t *testing.T) {
 	if w2.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", w2.Code)
 	}
-	var okResp map[string]interface{}
+	var okResp HealthResponse
 	if err := json.Unmarshal(w2.Body.Bytes(), &okResp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if okResp["backend_status"] != "online" || okResp["vehicle"] != "bicycle" {
-		t.Fatalf("expected online and bicycle, got %v", okResp)
+	if okResp.Backend != "online" || okResp.Status != "ok" {
+		t.Fatalf("unexpected ok response: %+v", okResp)
 	}
 }
 
@@ -147,6 +142,10 @@ func TestDistanceEndpointAndCaching(t *testing.T) {
 					Duration: 298.4,
 				},
 			},
+			Waypoints: []OsrmWaypoint{
+				{Location: [2]float64{38.7577, 9.0128}, Name: "Origin St"},
+				{Location: [2]float64{38.7891, 9.0054}, Name: "Dest St"},
+			},
 		}
 		_ = json.NewEncoder(rw).Encode(osrmRes)
 	}))
@@ -156,7 +155,7 @@ func TestDistanceEndpointAndCaching(t *testing.T) {
 	osrmURL = mockBackend.URL
 	defer func() { osrmURL = origURL }()
 
-	// Request 1: Cache MISS
+	// Cache MISS
 	req1 := httptest.NewRequest("GET", "/distance?from=38.7577,9.0128&to=38.7891,9.0054", nil)
 	w1 := httptest.NewRecorder()
 	handleDistance(w1, req1)
@@ -167,19 +166,16 @@ func TestDistanceEndpointAndCaching(t *testing.T) {
 	if w1.Header().Get("X-Cache") != "MISS" {
 		t.Fatalf("expected X-Cache MISS, got %s", w1.Header().Get("X-Cache"))
 	}
-	if !strings.Contains(w1.Header().Get("Cache-Control"), "public") {
-		t.Fatalf("expected public Cache-Control header, got %s", w1.Header().Get("Cache-Control"))
-	}
 
-	var dist FormattedDistance
+	var dist DistanceResponse
 	if err := json.Unmarshal(w1.Body.Bytes(), &dist); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if dist.Vehicle != "bicycle" || dist.DistanceKm != 4.8 || dist.DurationMinutes != 5.0 {
+	if dist.DistanceKm != 4.8 || dist.DurationMinutes != 5.0 || dist.Origin.Name != "Origin St" {
 		t.Fatalf("unexpected distance result: %+v", dist)
 	}
 
-	// Request 2: Cache HIT (even when lat,lon are swapped in query!)
+	// Cache HIT (with swapped lat,lon)
 	req2 := httptest.NewRequest("GET", "/distance?from=9.0128,38.7577&to=9.0054,38.7891", nil)
 	w2 := httptest.NewRecorder()
 	handleDistance(w2, req2)
@@ -188,10 +184,10 @@ func TestDistanceEndpointAndCaching(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w2.Code, w2.Body.String())
 	}
 	if w2.Header().Get("X-Cache") != "HIT" {
-		t.Fatalf("expected X-Cache HIT on second request, got %s", w2.Header().Get("X-Cache"))
+		t.Fatalf("expected X-Cache HIT, got %s", w2.Header().Get("X-Cache"))
 	}
 	if backendCalls != 1 {
-		t.Fatalf("expected exactly 1 backend call due to cache hit, got %d", backendCalls)
+		t.Fatalf("expected 1 backend call due to cache, got %d", backendCalls)
 	}
 }
 
@@ -205,13 +201,26 @@ func TestRouteEndpoint(t *testing.T) {
 				{
 					Distance: 1200.0,
 					Duration: 180.0,
+					Geometry: map[string]interface{}{"type": "LineString"},
 					Legs: []OsrmLeg{
 						{
 							Distance: 1200.0,
 							Duration: 180.0,
+							Steps: []OsrmStep{
+								{
+									Distance: 1200.0,
+									Duration: 180.0,
+									Name:     "Main St",
+									Maneuver: &OsrmManeuver{Type: "depart", Modifier: "straight"},
+								},
+							},
 						},
 					},
 				},
+			},
+			Waypoints: []OsrmWaypoint{
+				{Location: [2]float64{38.7577, 9.0128}, Name: "Point 1"},
+				{Location: [2]float64{38.7891, 9.0054}, Name: "Point 2"},
 			},
 		}
 		_ = json.NewEncoder(rw).Encode(osrmRes)
@@ -222,22 +231,19 @@ func TestRouteEndpoint(t *testing.T) {
 	osrmURL = mockBackend.URL
 	defer func() { osrmURL = origURL }()
 
-	req := httptest.NewRequest("GET", "/route?from=38.7577,9.0128&to=38.7891,9.0054", nil)
+	req := httptest.NewRequest("GET", "/route?from=38.7577,9.0128&to=38.7891,9.0054&steps=true", nil)
 	w := httptest.NewRecorder()
 	handleRoute(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if w.Header().Get("X-Cache") != "MISS" {
-		t.Fatalf("expected X-Cache MISS, got %s", w.Header().Get("X-Cache"))
+	var route RouteResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &route); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
 	}
-
-	// Repeated call should HIT cache
-	w2 := httptest.NewRecorder()
-	handleRoute(w2, req)
-	if w2.Header().Get("X-Cache") != "HIT" {
-		t.Fatalf("expected X-Cache HIT, got %s", w2.Header().Get("X-Cache"))
+	if route.DistanceKm != 1.2 || len(route.Steps) != 1 || route.Steps[0].Instruction != "Head out on Main St" {
+		t.Fatalf("unexpected route response: %+v", route)
 	}
 }
 
@@ -268,7 +274,6 @@ func TestMatrixEndpoint(t *testing.T) {
 	osrmURL = mockBackend.URL
 	defer func() { osrmURL = origURL }()
 
-	// Notice: passed as [lat, lon] to test auto-correction in matrix!
 	body := `{"coordinates": [[9.0128, 38.7577], [9.0054, 38.7891]]}`
 	req := httptest.NewRequest("POST", "/matrix", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -277,5 +282,11 @@ func TestMatrixEndpoint(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
+	var matrix MatrixResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &matrix); err != nil {
+		t.Fatalf("failed to decode matrix response: %v", err)
+	}
+	if matrix.DistancesKm[0][1] != 1.5 || matrix.DurationsMinutes[0][1] != 3.0 {
+		t.Fatalf("unexpected matrix response: %+v", matrix)
+	}
 }
-

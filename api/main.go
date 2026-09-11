@@ -28,16 +28,14 @@ var (
 )
 
 const (
-	profileName = "bicycle"
-
-	// Ethiopia bounding box
+	// Ethiopia geographic bounding box
 	MinLon = 32.0
 	MaxLon = 48.5
 	MinLat = 3.0
 	MaxLat = 15.5
 )
 
-// LRU Cache with TTL
+// LRUCache implements a thread-safe in-memory LRU cache with TTL
 type cacheEntry struct {
 	key       string
 	value     []byte
@@ -124,7 +122,6 @@ func (c *LRUCache) Len() int {
 	return len(c.items)
 }
 
-// Global cache: 10,000 entries, 24-hour TTL
 var routeCache = NewLRUCache(10000, 24*time.Hour)
 
 func getEnv(key, fallback string) string {
@@ -139,9 +136,6 @@ func roundFloat(val float64, decimals int) float64 {
 	return math.Round(val*pow) / pow
 }
 
-// normalizeAndValidate rounds coordinates to 5 decimal places (~1.1m precision),
-// detects swapped [lat, lon] coordinates and auto-corrects them to [lon, lat],
-// and verifies they fall within the coverage area of Ethiopia.
 func normalizeAndValidate(p1, p2 float64) (float64, float64, error) {
 	// Auto-correct: user provided [lat, lon]
 	if p1 >= MinLat && p1 <= MaxLat && p2 >= MinLon && p2 <= MaxLon {
@@ -204,7 +198,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// OSRM raw response models
+// OSRM Internal Structures
 type OsrmManeuver struct {
 	Type     string `json:"type,omitempty"`
 	Modifier string `json:"modifier,omitempty"`
@@ -245,38 +239,104 @@ type OsrmResponse struct {
 	Durations [][]float64    `json:"durations,omitempty"`
 }
 
-// Formatted response models
-type FormattedStep struct {
-	DistanceMeters  float64       `json:"distance_meters"`
+// Clean Public API Models
+type WaypointInfo struct {
+	Name     string     `json:"name"`
+	Location [2]float64 `json:"location"`
+}
+
+type RouteStep struct {
+	Instruction     string `json:"instruction"`
+	StreetName      string `json:"street_name,omitempty"`
+	DistanceMeters  int    `json:"distance_meters"`
+	DurationSeconds int    `json:"duration_seconds"`
+	Type            string `json:"type,omitempty"`
+	Modifier        string `json:"modifier,omitempty"`
+}
+
+type DistanceResponse struct {
+	DistanceKm      float64       `json:"distance_km"`
+	DurationMinutes float64       `json:"duration_minutes"`
+	DistanceMeters  int           `json:"distance_meters"`
 	DurationSeconds int           `json:"duration_seconds"`
-	Instruction     *OsrmManeuver `json:"instruction"`
-	Name            string        `json:"name"`
+	Origin          *WaypointInfo `json:"origin,omitempty"`
+	Destination     *WaypointInfo `json:"destination,omitempty"`
+}
+
+type RouteResponse struct {
+	DistanceKm      float64       `json:"distance_km"`
+	DurationMinutes float64       `json:"duration_minutes"`
+	DistanceMeters  int           `json:"distance_meters"`
+	DurationSeconds int           `json:"duration_seconds"`
+	Origin          *WaypointInfo `json:"origin,omitempty"`
+	Destination     *WaypointInfo `json:"destination,omitempty"`
 	Geometry        interface{}   `json:"geometry"`
+	Steps           []RouteStep   `json:"steps,omitempty"`
 }
 
-type FormattedLeg struct {
-	DistanceMeters  float64         `json:"distance_meters"`
-	DistanceKm      float64         `json:"distance_km"`
-	DurationSeconds int             `json:"duration_seconds"`
-	DurationMinutes float64         `json:"duration_minutes"`
-	Steps           []FormattedStep `json:"steps,omitempty"`
+type MatrixResponse struct {
+	DistancesKm      [][]float64    `json:"distances_km"`
+	DurationsMinutes [][]float64    `json:"durations_minutes"`
+	DistancesMeters  [][]int        `json:"distances_meters"`
+	DurationsSeconds [][]int        `json:"durations_seconds"`
+	Waypoints        []WaypointInfo `json:"waypoints"`
 }
 
-type FormattedRoute struct {
-	DistanceMeters  float64        `json:"distance_meters"`
-	DistanceKm      float64        `json:"distance_km"`
-	DurationSeconds int            `json:"duration_seconds"`
-	DurationMinutes float64        `json:"duration_minutes"`
-	Geometry        interface{}    `json:"geometry"`
-	Legs            []FormattedLeg `json:"legs"`
+type HealthResponse struct {
+	Status       string `json:"status"`
+	Backend      string `json:"backend"`
+	CachedRoutes int    `json:"cached_routes"`
 }
 
-type FormattedDistance struct {
-	Vehicle         string  `json:"vehicle"`
-	DistanceMeters  float64 `json:"distance_meters"`
-	DistanceKm      float64 `json:"distance_km"`
-	DurationSeconds int     `json:"duration_seconds"`
-	DurationMinutes float64 `json:"duration_minutes"`
+func formatInstruction(m *OsrmManeuver, streetName string) string {
+	target := streetName
+	if target == "" {
+		target = "road"
+	}
+
+	if m == nil {
+		return fmt.Sprintf("Continue onto %s", target)
+	}
+
+	mod := m.Modifier
+	switch m.Type {
+	case "depart":
+		if mod != "" && mod != "straight" {
+			return fmt.Sprintf("Head %s on %s", mod, target)
+		}
+		return fmt.Sprintf("Head out on %s", target)
+	case "arrive":
+		return "Arrive at destination"
+	case "turn":
+		if mod != "" {
+			return fmt.Sprintf("Turn %s onto %s", mod, target)
+		}
+		return fmt.Sprintf("Turn onto %s", target)
+	case "continue", "new name":
+		return fmt.Sprintf("Continue onto %s", target)
+	case "end of road":
+		if mod != "" {
+			return fmt.Sprintf("At the end of the road, turn %s onto %s", mod, target)
+		}
+		return fmt.Sprintf("At the end of the road, turn onto %s", target)
+	case "fork":
+		if mod != "" {
+			return fmt.Sprintf("Take the %s fork onto %s", mod, target)
+		}
+		return fmt.Sprintf("Take the fork onto %s", target)
+	case "roundabout":
+		return fmt.Sprintf("Enter the roundabout and take exit onto %s", target)
+	case "merge":
+		if mod != "" {
+			return fmt.Sprintf("Merge %s onto %s", mod, target)
+		}
+		return fmt.Sprintf("Merge onto %s", target)
+	default:
+		if mod != "" {
+			return fmt.Sprintf("Proceed %s onto %s", mod, target)
+		}
+		return fmt.Sprintf("Proceed onto %s", target)
+	}
 }
 
 var httpClient = &http.Client{
@@ -304,57 +364,50 @@ func osrmGet(reqPath string) (*OsrmResponse, error) {
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
-	// Active health check: verify OSRM backend connectivity
 	testURL := strings.TrimRight(osrmURL, "/") + "/route/v1/driving/38.7577,9.0128;38.7578,9.0129?overview=false"
 	checkClient := http.Client{Timeout: 2 * time.Second}
 	resp, err := checkClient.Get(testURL)
 
 	if err != nil || resp.StatusCode >= 500 {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
-			"status":         "degraded",
-			"vehicle":        profileName,
-			"profiles":       []string{profileName},
-			"backend_status": "offline",
-			"cached_routes":  routeCache.Len(),
-			"error":          "OSRM bicycle backend is unreachable",
+		writeJSON(w, http.StatusServiceUnavailable, HealthResponse{
+			Status:       "degraded",
+			Backend:      "offline",
+			CachedRoutes: routeCache.Len(),
 		})
 		return
 	}
 	defer resp.Body.Close()
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":         "ok",
-		"vehicle":        profileName,
-		"profiles":       []string{profileName},
-		"backend_status": "online",
-		"cached_routes":  routeCache.Len(),
+	writeJSON(w, http.StatusOK, HealthResponse{
+		Status:       "ok",
+		Backend:      "online",
+		CachedRoutes: routeCache.Len(),
 	})
 }
 
 func handleRoute(w http.ResponseWriter, r *http.Request) {
 	from := r.URL.Query().Get("from")
 	to := r.URL.Query().Get("to")
-	alternatives := r.URL.Query().Get("alternatives") == "true"
 	steps := r.URL.Query().Get("steps") == "true"
 
 	if from == "" || to == "" {
-		writeError(w, http.StatusBadRequest, "from and to query params required")
+		writeError(w, http.StatusBadRequest, "from and to query parameters required")
 		return
 	}
 
 	fromCoords, err1 := parseCoords(from)
 	if err1 != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'from' coords: %v", err1))
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid from coords: %v", err1))
 		return
 	}
 	toCoords, err2 := parseCoords(to)
 	if err2 != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'to' coords: %v", err2))
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid to coords: %v", err2))
 		return
 	}
 
-	cacheKey := fmt.Sprintf("route:%.5f,%.5f->%.5f,%.5f:alt=%t:steps=%t",
-		fromCoords[0], fromCoords[1], toCoords[0], toCoords[1], alternatives, steps)
+	cacheKey := fmt.Sprintf("route:%.5f,%.5f->%.5f,%.5f:steps=%t",
+		fromCoords[0], fromCoords[1], toCoords[0], toCoords[1], steps)
 
 	if cached, hit := routeCache.Get(cacheKey); hit {
 		writeCachedJSON(w, http.StatusOK, true, cached)
@@ -363,7 +416,7 @@ func handleRoute(w http.ResponseWriter, r *http.Request) {
 
 	params := url.Values{}
 	params.Set("overview", "full")
-	params.Set("alternatives", strconv.FormatBool(alternatives))
+	params.Set("alternatives", "false")
 	params.Set("steps", strconv.FormatBool(steps))
 	params.Set("geometries", "geojson")
 
@@ -382,49 +435,54 @@ func handleRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	formattedRoutes := make([]FormattedRoute, len(result.Routes))
-	for i, route := range result.Routes {
-		legs := make([]FormattedLeg, len(route.Legs))
-		for j, leg := range route.Legs {
-			var formattedSteps []FormattedStep
-			if len(leg.Steps) > 0 {
-				formattedSteps = make([]FormattedStep, len(leg.Steps))
-				for k, step := range leg.Steps {
-					formattedSteps[k] = FormattedStep{
-						DistanceMeters:  step.Distance,
-						DurationSeconds: int(math.Round(step.Duration)),
-						Instruction:     step.Maneuver,
-						Name:            step.Name,
-						Geometry:        step.Geometry,
-					}
+	route := result.Routes[0]
+
+	var originInfo, destInfo *WaypointInfo
+	if len(result.Waypoints) >= 2 {
+		originInfo = &WaypointInfo{
+			Name:     result.Waypoints[0].Name,
+			Location: [2]float64{roundFloat(result.Waypoints[0].Location[0], 5), roundFloat(result.Waypoints[0].Location[1], 5)},
+		}
+		destInfo = &WaypointInfo{
+			Name:     result.Waypoints[1].Name,
+			Location: [2]float64{roundFloat(result.Waypoints[1].Location[0], 5), roundFloat(result.Waypoints[1].Location[1], 5)},
+		}
+	}
+
+	var routeSteps []RouteStep
+	if steps && len(route.Legs) > 0 {
+		for _, leg := range route.Legs {
+			for _, step := range leg.Steps {
+				maneuverType := ""
+				maneuverMod := ""
+				if step.Maneuver != nil {
+					maneuverType = step.Maneuver.Type
+					maneuverMod = step.Maneuver.Modifier
 				}
+				routeSteps = append(routeSteps, RouteStep{
+					Instruction:     formatInstruction(step.Maneuver, step.Name),
+					StreetName:      step.Name,
+					DistanceMeters:  int(math.Round(step.Distance)),
+					DurationSeconds: int(math.Round(step.Duration)),
+					Type:            maneuverType,
+					Modifier:        maneuverMod,
+				})
 			}
-			legs[j] = FormattedLeg{
-				DistanceMeters:  leg.Distance,
-				DistanceKm:      roundFloat(leg.Distance/1000.0, 2),
-				DurationSeconds: int(math.Round(leg.Duration)),
-				DurationMinutes: roundFloat(leg.Duration/60.0, 1),
-				Steps:           formattedSteps,
-			}
-		}
-
-		formattedRoutes[i] = FormattedRoute{
-			DistanceMeters:  route.Distance,
-			DistanceKm:      roundFloat(route.Distance/1000.0, 2),
-			DurationSeconds: int(math.Round(route.Duration)),
-			DurationMinutes: roundFloat(route.Duration/60.0, 1),
-			Geometry:        route.Geometry,
-			Legs:            legs,
 		}
 	}
 
-	respData := map[string]interface{}{
-		"vehicle":   profileName,
-		"routes":    formattedRoutes,
-		"waypoints": result.Waypoints,
+	resp := RouteResponse{
+		DistanceKm:      roundFloat(route.Distance/1000.0, 2),
+		DurationMinutes: roundFloat(route.Duration/60.0, 1),
+		DistanceMeters:  int(math.Round(route.Distance)),
+		DurationSeconds: int(math.Round(route.Duration)),
+		Origin:          originInfo,
+		Destination:     destInfo,
+		Geometry:        route.Geometry,
+		Steps:           routeSteps,
 	}
 
-	jsonBytes, err := json.Marshal(respData)
+	jsonBytes, err := json.Marshal(resp)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to serialize route response")
 		return
@@ -439,18 +497,18 @@ func handleDistance(w http.ResponseWriter, r *http.Request) {
 	to := r.URL.Query().Get("to")
 
 	if from == "" || to == "" {
-		writeError(w, http.StatusBadRequest, "from and to query params required")
+		writeError(w, http.StatusBadRequest, "from and to query parameters required")
 		return
 	}
 
 	fromCoords, err1 := parseCoords(from)
 	if err1 != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'from' coords: %v", err1))
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid from coords: %v", err1))
 		return
 	}
 	toCoords, err2 := parseCoords(to)
 	if err2 != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'to' coords: %v", err2))
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid to coords: %v", err2))
 		return
 	}
 
@@ -478,15 +536,29 @@ func handleDistance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	route := result.Routes[0]
-	respData := FormattedDistance{
-		Vehicle:         profileName,
-		DistanceMeters:  route.Distance,
-		DistanceKm:      roundFloat(route.Distance/1000.0, 2),
-		DurationSeconds: int(math.Round(route.Duration)),
-		DurationMinutes: roundFloat(route.Duration/60.0, 1),
+
+	var originInfo, destInfo *WaypointInfo
+	if len(result.Waypoints) >= 2 {
+		originInfo = &WaypointInfo{
+			Name:     result.Waypoints[0].Name,
+			Location: [2]float64{roundFloat(result.Waypoints[0].Location[0], 5), roundFloat(result.Waypoints[0].Location[1], 5)},
+		}
+		destInfo = &WaypointInfo{
+			Name:     result.Waypoints[1].Name,
+			Location: [2]float64{roundFloat(result.Waypoints[1].Location[0], 5), roundFloat(result.Waypoints[1].Location[1], 5)},
+		}
 	}
 
-	jsonBytes, err := json.Marshal(respData)
+	resp := DistanceResponse{
+		DistanceKm:      roundFloat(route.Distance/1000.0, 2),
+		DurationMinutes: roundFloat(route.Duration/60.0, 1),
+		DistanceMeters:  int(math.Round(route.Distance)),
+		DurationSeconds: int(math.Round(route.Duration)),
+		Origin:          originInfo,
+		Destination:     destInfo,
+	}
+
+	jsonBytes, err := json.Marshal(resp)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to serialize distance response")
 		return
@@ -498,7 +570,6 @@ func handleDistance(w http.ResponseWriter, r *http.Request) {
 
 type MatrixRequest struct {
 	Coordinates [][2]float64 `json:"coordinates"`
-	Vehicle     string       `json:"vehicle,omitempty"`
 }
 
 func handleMatrix(w http.ResponseWriter, r *http.Request) {
@@ -561,22 +632,52 @@ func handleMatrix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	waypoints := normalizedCoords
-	if len(result.Waypoints) > 0 {
-		waypoints = make([][2]float64, len(result.Waypoints))
-		for i, wp := range result.Waypoints {
-			waypoints[i] = wp.Location
+	n := len(req.Coordinates)
+	distancesKm := make([][]float64, n)
+	durationsMinutes := make([][]float64, n)
+	distancesMeters := make([][]int, n)
+	durationsSeconds := make([][]int, n)
+
+	for i := 0; i < n; i++ {
+		distancesKm[i] = make([]float64, n)
+		durationsMinutes[i] = make([]float64, n)
+		distancesMeters[i] = make([]int, n)
+		durationsSeconds[i] = make([]int, n)
+		for j := 0; j < n; j++ {
+			if i < len(result.Distances) && j < len(result.Distances[i]) {
+				rawDist := result.Distances[i][j]
+				distancesKm[i][j] = roundFloat(rawDist/1000.0, 2)
+				distancesMeters[i][j] = int(math.Round(rawDist))
+			}
+			if i < len(result.Durations) && j < len(result.Durations[i]) {
+				rawDur := result.Durations[i][j]
+				durationsMinutes[i][j] = roundFloat(rawDur/60.0, 1)
+				durationsSeconds[i][j] = int(math.Round(rawDur))
+			}
 		}
 	}
 
-	respData := map[string]interface{}{
-		"vehicle":     profileName,
-		"distances":   result.Distances,
-		"durations":   result.Durations,
-		"coordinates": waypoints,
+	waypoints := make([]WaypointInfo, len(normalizedCoords))
+	for i, c := range normalizedCoords {
+		name := ""
+		if i < len(result.Waypoints) {
+			name = result.Waypoints[i].Name
+		}
+		waypoints[i] = WaypointInfo{
+			Name:     name,
+			Location: c,
+		}
 	}
 
-	jsonBytes, err := json.Marshal(respData)
+	resp := MatrixResponse{
+		DistancesKm:      distancesKm,
+		DurationsMinutes: durationsMinutes,
+		DistancesMeters:  distancesMeters,
+		DurationsSeconds: durationsSeconds,
+		Waypoints:        waypoints,
+	}
+
+	jsonBytes, err := json.Marshal(resp)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to serialize matrix response")
 		return
@@ -586,7 +687,6 @@ func handleMatrix(w http.ResponseWriter, r *http.Request) {
 	writeCachedJSON(w, http.StatusOK, false, jsonBytes)
 }
 
-// corsMiddleware adds standard CORS headers
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -602,7 +702,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// findMapPath locates the pre-compiled OSRM map dataset
 func findMapPath() string {
 	if custom := os.Getenv("OSRM_MAP_PATH"); custom != "" {
 		return custom
@@ -623,8 +722,6 @@ func findMapPath() string {
 	return ""
 }
 
-// startSupervisor checks if osrm-routed and map data exist, and if so launches
-// osrm-routed with memory mapping enabled (--mmap) in a managed child process.
 func startSupervisor() *exec.Cmd {
 	osrmBin, err := exec.LookPath("osrm-routed")
 	if err != nil {
@@ -638,7 +735,6 @@ func startSupervisor() *exec.Cmd {
 		return nil
 	}
 
-	// Adjust permissions if mounted volume requires it
 	_ = exec.Command("chmod", "-R", "777", "/opt/osrm-data", "/data").Run()
 
 	log.Printf("[Supervisor] Map found: %s", mapPath)
@@ -662,7 +758,6 @@ func startSupervisor() *exec.Cmd {
 
 	log.Printf("[Supervisor] osrm-routed running with PID %d", cmd.Process.Pid)
 
-	// Wait for OSRM to bind to port 5000 (up to 30 seconds)
 	ready := false
 	for i := 0; i < 60; i++ {
 		conn, err := net.DialTimeout("tcp", "127.0.0.1:5000", 250*time.Millisecond)
@@ -699,12 +794,11 @@ func main() {
 		Handler: handler,
 	}
 
-	// Channel to capture shutdown signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("OSRM Bicycle Routing Service (Go) listening on port %s", port)
+		log.Printf("OSRM Bicycle Routing Service listening on port %s", port)
 		log.Printf("OSRM Backend URL: %s", osrmURL)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
@@ -738,4 +832,3 @@ func main() {
 
 	log.Printf("Shutdown complete.")
 }
-

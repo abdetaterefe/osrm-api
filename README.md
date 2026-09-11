@@ -1,138 +1,176 @@
 # OSRM Bicycle Routing Service (Ethiopia)
 
-High-performance, ultra-lean bicycle routing and distance calculation service for Ethiopia, built with **OSRM** and **100% Go**. Designed to run effortlessly on **Koyeb**, **Railway**, **Render**, **Fly.io**, or **any VPS with 512 MB RAM**.
+High-performance, ultra-lean bicycle routing and distance calculation service for Ethiopia, built with **OSRM** and **100% Go**. Optimized for 512 MB RAM environments on **Koyeb**, **Railway**, or any standard VPS.
 
 ---
 
 ## Features
 
-- **100% Go + OSRM**: Zero Node.js, zero pnpm, zero npm, zero shell script dependencies.
-- **Dedicated Bicycle Routing**: Simplified API dedicated specifically to bicycle navigation, speeds, and cycleways.
-- **In-Memory LRU Cache with TTL**: Built-in thread-safe cache stores up to 10,000 routes for 24 hours. Repeated queries respond in **< 1 ms**.
-- **Smart Coordinate Auto-Correction**: Intelligently detects whether coordinates are passed as `lon,lat` or `lat,lon` and auto-corrects them for Ethiopia, rounding to 5 decimal places (~1.1m precision).
-- **HTTP Edge Caching**: Responses include `Cache-Control` and `X-Cache: HIT/MISS` headers for seamless CDN / edge caching.
-- **Go Child Process Supervisor**: The Go server acts as PID 1, launching and supervising `osrm-routed --mmap`, ensuring graceful restarts and shutdown.
-- **Ultra-Lean Memory (< 100 MB Active)**: Uses memory-mapped files (`--mmap`) so `osrm-routed` and the Go API together run comfortably in 512 MB RAM containers.
+- **Clean, Modern API**: No nested arrays, no legacy fields, zero fluff. Everything is right at the top level.
+- **Dedicated Bicycle Routing**: Accurate Ethiopian cycling paths, road surfaces, and bicycle speeds.
+- **In-Memory LRU Cache with TTL**: Built-in cache stores up to 10,000 routes for 24 hours with **< 1 ms** response times.
+- **Smart Coordinate Auto-Correction**: Seamlessly accepts `lon,lat` or `lat,lon` and auto-corrects them for Ethiopia (lat: 3.0°–15.5°N, lon: 32.0°–48.5°E), rounded to 5 decimal places (~1.1m precision).
+- **HTTP Edge Caching**: Responses include `Cache-Control: public, max-age=86400, stale-while-revalidate=3600` and `X-Cache: HIT/MISS` headers.
+- **Go Child Process Supervisor**: Single binary serves HTTP and manages `osrm-routed --mmap` as PID 1 with clean graceful shutdowns.
 
 ---
 
-## Live Endpoints
+## API Endpoints
 
-| Endpoint | Method | Description |
-| :--- | :--- | :--- |
-| `/health` | GET | Active health probe & backend status + cache item count |
-| `/distance` | GET | Quick road distance, duration, and km for bicycles |
-| `/route` | GET | Turn-by-turn maneuvers & full GeoJSON geometry |
-| `/matrix` | POST | Distance & duration matrix between multiple coordinates |
+### 1. `GET /health`
 
----
-
-## API Documentation
-
-### `GET /health`
-
-Actively probes backend connectivity and reports cache statistics.
+Active probe verifying backend connectivity and cache status.
 
 ```bash
-curl http://localhost:3000/health
+curl https://peculiar-rina-sharenex-b86b2492.koyeb.app/health
 ```
 
-Healthy response (`200 OK`):
+Response (`200 OK`):
 ```json
 {
   "status": "ok",
-  "vehicle": "bicycle",
-  "backend_status": "online",
-  "cached_routes": 42
+  "backend": "online",
+  "cached_routes": 4
 }
 ```
 
 ---
 
-### `GET /distance`
+### 2. `GET /distance`
 
-Calculates road distance and duration between two coordinates for bicycles.
+Quick road distance and duration calculation between two points.
 
-- Coordinates can be provided as `lon,lat` OR `lat,lon` (auto-detected).
-
-```bash
-curl "http://localhost:3000/distance?from=38.7577,9.0128&to=38.7891,9.0054"
-```
-
-Response:
-```json
-{
-  "vehicle": "bicycle",
-  "distance_meters": 4804.6,
-  "distance_km": 4.8,
-  "duration_seconds": 298,
-  "duration_minutes": 5.0
-}
-```
-
-Response Headers:
-```http
-Cache-Control: public, max-age=86400, stale-while-revalidate=3600
-X-Cache: HIT
-Content-Type: application/json; charset=utf-8
-```
-
----
-
-### `GET /route`
-
-Returns full route geometry (GeoJSON) and turn-by-turn maneuvers.
-
-Query Parameters:
+Query parameters:
 - `from`: starting coordinates (`lon,lat` or `lat,lon`)
 - `to`: destination coordinates (`lon,lat` or `lat,lon`)
-- `steps`: `true` / `false` (include step maneuvers, default `false`)
-- `alternatives`: `true` / `false` (return alternative routes, default `false`)
 
 ```bash
-curl "http://localhost:3000/route?from=38.7577,9.0128&to=38.7891,9.0054&steps=true"
+curl "https://peculiar-rina-sharenex-b86b2492.koyeb.app/distance?from=38.7577,9.0128&to=38.7891,9.0054"
+```
+
+Response (`200 OK`):
+```json
+{
+  "distance_km": 4.09,
+  "duration_minutes": 18.0,
+  "distance_meters": 4088,
+  "duration_seconds": 1080,
+  "origin": {
+    "name": "Ras Desta Damtew Street",
+    "location": [38.75739, 9.01284]
+  },
+  "destination": {
+    "name": "BL_03_573 Street",
+    "location": [38.78909, 9.00543]
+  }
+}
 ```
 
 ---
 
-### `POST /matrix`
+### 3. `GET /route`
 
-Compute distance and duration tables for multiple points in Ethiopia.
+Full route geometry and turn-by-turn cycling instructions.
+
+Query parameters:
+- `from`: starting coordinates (`lon,lat` or `lat,lon`)
+- `to`: destination coordinates (`lon,lat` or `lat,lon`)
+- `steps`: `true` or `false` (optional, default `false`)
 
 ```bash
-curl -X POST http://localhost:3000/matrix \
-  -H "Content-Type: application/json" \
-  -d '{
+curl "https://peculiar-rina-sharenex-b86b2492.koyeb.app/route?from=38.7577,9.0128&to=38.7891,9.0054&steps=true"
+```
+
+Response (`200 OK`):
+```json
+{
+  "distance_km": 4.09,
+  "duration_minutes": 18.0,
+  "distance_meters": 4088,
+  "duration_seconds": 1080,
+  "origin": {
+    "name": "Ras Desta Damtew Street",
+    "location": [38.75739, 9.01284]
+  },
+  "destination": {
+    "name": "BL_03_573 Street",
+    "location": [38.78909, 9.00543]
+  },
+  "geometry": {
+    "type": "LineString",
     "coordinates": [
-      [38.7577, 9.0128],
-      [38.7891, 9.0054],
-      [38.7700, 9.0200]
+      [38.75739, 9.01284],
+      [38.75753, 9.01369],
+      [38.75802, 9.01316]
     ]
-  }'
+  },
+  "steps": [
+    {
+      "instruction": "Head right on Ras Desta Damtew Street",
+      "street_name": "Ras Desta Damtew Street",
+      "distance_meters": 313,
+      "duration_seconds": 81,
+      "type": "depart",
+      "modifier": "right"
+    },
+    {
+      "instruction": "Turn left onto Jomo Kenyatta Avenue",
+      "street_name": "Jomo Kenyatta Avenue",
+      "distance_meters": 1058,
+      "duration_seconds": 294,
+      "type": "turn",
+      "modifier": "left"
+    }
+  ]
+}
 ```
 
 ---
 
-## Deployment Options
+### 4. `POST /matrix`
 
-### Koyeb (Recommended)
+Distance and duration tables for multiple points.
 
-1. Connect your GitHub repository to Koyeb.
-2. Select **Dockerfile** as the build type.
-3. Koyeb will automatically build the container and deploy it with a public HTTPS URL.
+Request body:
+```json
+{
+  "coordinates": [
+    [38.7577, 9.0128],
+    [38.7891, 9.0054],
+    [38.7700, 9.0200]
+  ]
+}
+```
 
-### VPS (Docker Compose)
-
-```bash
-# Clone the repository
-git clone https://github.com/abdetaterefe/osrm-api.git
-cd osrm-api
-
-# Start the service
-docker compose up -d --build
-
-# View logs
-docker compose logs -f
+Response (`200 OK`):
+```json
+{
+  "distances_km": [
+    [0.0, 4.09, 2.91],
+    [4.33, 0.0, 3.38],
+    [2.60, 3.30, 0.0]
+  ],
+  "durations_minutes": [
+    [0.0, 18.0, 12.5],
+    [18.9, 0.0, 14.5],
+    [11.6, 13.8, 0.0]
+  ],
+  "distances_meters": [
+    [0, 4088, 2906],
+    [4327, 0, 3377],
+    [2599, 3299, 0]
+  ],
+  "durations_seconds": [
+    [0, 1080, 749],
+    [1137, 0, 871],
+    [698, 829, 0]
+  ],
+  "waypoints": [
+    { "name": "Ras Desta Damtew Street", "location": [38.75739, 9.01284] },
+    { "name": "BL_03_573 Street", "location": [38.78909, 9.00543] },
+    { "name": "", "location": [38.77000, 9.02000] }
+  ]
+}
 ```
 
 ---
@@ -141,14 +179,13 @@ docker compose logs -f
 
 ```
 ├── Dockerfile                # Multi-stage container (Go builder + OSRM runtime)
-├── docker-compose.yml        # Compose service configuration
+├── docker-compose.yml        # Docker Compose configuration for VPS
 ├── profiles/
 │   └── bicycle.lua           # Custom bicycle routing profile for Ethiopia
 ├── api/
-│   ├── main.go               # Go API & Process Supervisor with LRU Cache
+│   ├── main.go               # Pure Go HTTP API & Process Supervisor with LRU Cache
 │   ├── main_test.go          # Unit tests (cache, auto-correction, endpoints)
-│   ├── go.mod                # Pure Go stdlib module
+│   ├── go.mod                # Pure Go module definition
 │   └── Dockerfile            # Standalone API image (optional)
 └── README.md
 ```
-
