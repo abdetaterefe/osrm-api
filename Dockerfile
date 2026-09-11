@@ -2,14 +2,18 @@
 FROM golang:1.24-alpine AS builder
 WORKDIR /build
 
+# Install curl to reliably follow GitHub release redirects (BusyBox wget fails on 302 redirects)
+RUN apk add --no-cache curl ca-certificates
+
 # Copy and compile Go API
 COPY api/go.mod ./
 COPY api/main.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o api-server .
 
-# Download pre-compiled Ethiopia bicycle map from GitHub Release (CDN-backed, unmetered, fast)
+# Download pre-compiled Ethiopia bicycle map from GitHub Release
 RUN echo "=== Downloading pre-compiled Ethiopia bicycle map data ===" && \
-    wget -O ethiopia-bicycle-osrm.tar.gz https://github.com/abdetaterefe/osrm-api/releases/download/v1.0-data/ethiopia-bicycle-osrm.tar.gz
+    curl -fsSL -o ethiopia-bicycle-osrm.tar.gz https://github.com/abdetaterefe/osrm-api/releases/download/v1.0-data/ethiopia-bicycle-osrm.tar.gz && \
+    echo "=== Download complete, size: $(du -h ethiopia-bicycle-osrm.tar.gz | cut -f1) ==="
 
 # Stage 2: Unified OSRM Bicycle runtime container
 FROM ghcr.io/project-osrm/osrm-backend:v5.27.1
