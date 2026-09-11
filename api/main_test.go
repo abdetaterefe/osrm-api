@@ -6,25 +6,38 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseCoords(t *testing.T) {
-	coords, err := parseCoords("38.7577,9.0128")
+	// Standard lon,lat
+	coords, err := parseCoords("38.7577123,9.0128456")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if coords[0] != 38.7577 || coords[1] != 9.0128 {
-		t.Fatalf("unexpected coords: %v", coords)
+	if coords[0] != 38.75771 || coords[1] != 9.01285 {
+		t.Fatalf("unexpected rounded coords: %v", coords)
 	}
 
+	// Swapped lat,lon auto-correction
+	coordsSwapped, err := parseCoords("9.01285,38.75771")
+	if err != nil {
+		t.Fatalf("unexpected error for swapped coords: %v", err)
+	}
+	if coordsSwapped[0] != 38.75771 || coordsSwapped[1] != 9.01285 {
+		t.Fatalf("expected auto-swapped coords [38.75771, 9.01285], got %v", coordsSwapped)
+	}
+
+	// Invalid format
 	_, err = parseCoords("invalid")
 	if err == nil {
 		t.Fatal("expected error for invalid coords")
 	}
 
-	_, err = parseCoords("12.34,invalid")
+	// Out of bounds coordinate
+	_, err = parseCoords("0.0,0.0")
 	if err == nil {
-		t.Fatal("expected error for non-float coords")
+		t.Fatal("expected error for out of bounds coords")
 	}
 }
 
@@ -37,6 +50,41 @@ func TestRoundFloat(t *testing.T) {
 	}
 	if got := roundFloat(4.96, 1); got != 5.0 {
 		t.Fatalf("expected 5.0, got %v", got)
+	}
+	if got := roundFloat(38.757712345, 5); got != 38.75771 {
+		t.Fatalf("expected 38.75771, got %v", got)
+	}
+}
+
+func TestLRUCache(t *testing.T) {
+	cache := NewLRUCache(2, 50*time.Millisecond)
+
+	// Set & Get
+	cache.Set("k1", []byte("val1"))
+	cache.Set("k2", []byte("val2"))
+
+	v, ok := cache.Get("k1")
+	if !ok || string(v) != "val1" {
+		t.Fatalf("expected val1, got %s", string(v))
+	}
+
+	// Eviction when capacity exceeded (k2 was accessed least recently since k1 was accessed above)
+	cache.Set("k3", []byte("val3"))
+
+	if _, ok := cache.Get("k2"); ok {
+		t.Fatal("expected k2 to be evicted")
+	}
+	if _, ok := cache.Get("k1"); !ok {
+		t.Fatal("expected k1 to be present")
+	}
+	if _, ok := cache.Get("k3"); !ok {
+		t.Fatal("expected k3 to be present")
+	}
+
+	// TTL Expiration
+	time.Sleep(60 * time.Millisecond)
+	if _, ok := cache.Get("k1"); ok {
+		t.Fatal("expected k1 to have expired")
 	}
 }
 
@@ -80,13 +128,17 @@ func TestHealthCheck(t *testing.T) {
 	if err := json.Unmarshal(w2.Body.Bytes(), &okResp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if okResp["backend_status"] != "online" {
-		t.Fatalf("expected backend_status online, got %v", okResp["backend_status"])
+	if okResp["backend_status"] != "online" || okResp["vehicle"] != "bicycle" {
+		t.Fatalf("expected online and bicycle, got %v", okResp)
 	}
 }
 
-func TestDistanceEndpoint(t *testing.T) {
+func TestDistanceEndpointAndCaching(t *testing.T) {
+	routeCache.Purge()
+
+	backendCalls := 0
 	mockBackend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		backendCalls++
 		osrmRes := OsrmResponse{
 			Code: "Ok",
 			Routes: []OsrmRoute{
@@ -104,24 +156,94 @@ func TestDistanceEndpoint(t *testing.T) {
 	osrmURL = mockBackend.URL
 	defer func() { osrmURL = origURL }()
 
-	req := httptest.NewRequest("GET", "/distance?from=38.7577,9.0128&to=38.7891,9.0054&vehicle=bicycle", nil)
-	w := httptest.NewRecorder()
-	handleDistance(w, req)
+	// Request 1: Cache MISS
+	req1 := httptest.NewRequest("GET", "/distance?from=38.7577,9.0128&to=38.7891,9.0054", nil)
+	w1 := httptest.NewRecorder()
+	handleDistance(w1, req1)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w1.Code, w1.Body.String())
+	}
+	if w1.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("expected X-Cache MISS, got %s", w1.Header().Get("X-Cache"))
+	}
+	if !strings.Contains(w1.Header().Get("Cache-Control"), "public") {
+		t.Fatalf("expected public Cache-Control header, got %s", w1.Header().Get("Cache-Control"))
 	}
 
 	var dist FormattedDistance
-	if err := json.Unmarshal(w.Body.Bytes(), &dist); err != nil {
+	if err := json.Unmarshal(w1.Body.Bytes(), &dist); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 	if dist.Vehicle != "bicycle" || dist.DistanceKm != 4.8 || dist.DurationMinutes != 5.0 {
 		t.Fatalf("unexpected distance result: %+v", dist)
 	}
+
+	// Request 2: Cache HIT (even when lat,lon are swapped in query!)
+	req2 := httptest.NewRequest("GET", "/distance?from=9.0128,38.7577&to=9.0054,38.7891", nil)
+	w2 := httptest.NewRecorder()
+	handleDistance(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	if w2.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("expected X-Cache HIT on second request, got %s", w2.Header().Get("X-Cache"))
+	}
+	if backendCalls != 1 {
+		t.Fatalf("expected exactly 1 backend call due to cache hit, got %d", backendCalls)
+	}
+}
+
+func TestRouteEndpoint(t *testing.T) {
+	routeCache.Purge()
+
+	mockBackend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		osrmRes := OsrmResponse{
+			Code: "Ok",
+			Routes: []OsrmRoute{
+				{
+					Distance: 1200.0,
+					Duration: 180.0,
+					Legs: []OsrmLeg{
+						{
+							Distance: 1200.0,
+							Duration: 180.0,
+						},
+					},
+				},
+			},
+		}
+		_ = json.NewEncoder(rw).Encode(osrmRes)
+	}))
+	defer mockBackend.Close()
+
+	origURL := osrmURL
+	osrmURL = mockBackend.URL
+	defer func() { osrmURL = origURL }()
+
+	req := httptest.NewRequest("GET", "/route?from=38.7577,9.0128&to=38.7891,9.0054", nil)
+	w := httptest.NewRecorder()
+	handleRoute(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("expected X-Cache MISS, got %s", w.Header().Get("X-Cache"))
+	}
+
+	// Repeated call should HIT cache
+	w2 := httptest.NewRecorder()
+	handleRoute(w2, req)
+	if w2.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("expected X-Cache HIT, got %s", w2.Header().Get("X-Cache"))
+	}
 }
 
 func TestMatrixEndpoint(t *testing.T) {
+	routeCache.Purge()
+
 	mockBackend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		osrmRes := OsrmResponse{
 			Code: "Ok",
@@ -146,7 +268,8 @@ func TestMatrixEndpoint(t *testing.T) {
 	osrmURL = mockBackend.URL
 	defer func() { osrmURL = origURL }()
 
-	body := `{"coordinates": [[38.7577, 9.0128], [38.7891, 9.0054]], "vehicle": "bicycle"}`
+	// Notice: passed as [lat, lon] to test auto-correction in matrix!
+	body := `{"coordinates": [[9.0128, 38.7577], [9.0054, 38.7891]]}`
 	req := httptest.NewRequest("POST", "/matrix", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	handleMatrix(w, req)
@@ -155,3 +278,4 @@ func TestMatrixEndpoint(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
+

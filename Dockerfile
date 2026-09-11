@@ -23,16 +23,15 @@ WORKDIR /app
 # Copy the compiled Go API binary
 COPY --from=builder /build/api-server /app/api-server
 
-# Copy bicycle profile and entrypoint script
+# Copy bicycle profile
 COPY profiles/ /profiles/
-COPY scripts/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
 
 # Unpack pre-compiled map data directly into /opt/osrm-data
 RUN mkdir -p /opt/osrm-data
 COPY --from=builder /build/ethiopia-bicycle-osrm.tar.gz /opt/osrm-data/
 RUN tar -xzf /opt/osrm-data/ethiopia-bicycle-osrm.tar.gz -C /opt/osrm-data && \
     rm -f /opt/osrm-data/ethiopia-bicycle-osrm.tar.gz && \
+    chmod -R 777 /opt/osrm-data && \
     echo "=== Map unpack complete ==="
 
 ENV PORT=3000
@@ -40,4 +39,5 @@ ENV OSRM_URL=http://127.0.0.1:5000
 
 EXPOSE 3000
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["/app/api-server"]
+
