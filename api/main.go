@@ -1,16 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"container/list"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"math"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -22,9 +23,10 @@ import (
 )
 
 var (
-	osrmURL      = getEnv("OSRM_URL", getEnv("OSRM_BICYCLE", "http://127.0.0.1:5000"))
-	port         = getEnv("PORT", "3000")
-	strictBounds = getEnv("STRICT_BOUNDS", "true") == "true"
+	valhallaURL    = getEnv("VALHALLA_URL", getEnv("OSRM_URL", "http://127.0.0.1:8002"))
+	port           = getEnv("PORT", "3000")
+	defaultProfile = getEnv("DEFAULT_PROFILE", "bicycle")
+	strictBounds   = getEnv("STRICT_BOUNDS", "true") == "true"
 )
 
 const (
@@ -34,6 +36,62 @@ const (
 	MinLat = 3.0
 	MaxLat = 15.5
 )
+
+// ProfileInfo describes a routing profile and its Valhalla costing model
+type ProfileInfo struct {
+	Name        string   `json:"name"`
+	Costing     string   `json:"costing"`
+	Aliases     []string `json:"aliases"`
+	Description string   `json:"description"`
+}
+
+var SupportedProfiles = map[string]ProfileInfo{
+	"bicycle": {
+		Name:        "bicycle",
+		Costing:     "bicycle",
+		Aliases:     []string{"bike", "cycling"},
+		Description: "Bicycle routing prioritizing cycling paths, tracks, and quiet roads",
+	},
+	"car": {
+		Name:        "car",
+		Costing:     "auto",
+		Aliases:     []string{"auto", "driving", "automobile"},
+		Description: "Automobile routing based on standard Ethiopian road classification and speed limits",
+	},
+	"motorcycle": {
+		Name:        "motorcycle",
+		Costing:     "motorcycle",
+		Aliases:     []string{"moto", "motorbike"},
+		Description: "Motorcycle routing with agile traversal and flexible road permissions",
+	},
+	"pedestrian": {
+		Name:        "pedestrian",
+		Costing:     "pedestrian",
+		Aliases:     []string{"walk", "foot", "walking"},
+		Description: "Pedestrian walking routes utilizing sidewalks, crosswalks, and footways",
+	},
+}
+
+func resolveProfile(raw string) (ProfileInfo, error) {
+	if raw == "" {
+		raw = defaultProfile
+	}
+	clean := strings.ToLower(strings.TrimSpace(raw))
+
+	if info, ok := SupportedProfiles[clean]; ok {
+		return info, nil
+	}
+
+	for _, info := range SupportedProfiles {
+		for _, alias := range info.Aliases {
+			if clean == alias {
+				return info, nil
+			}
+		}
+	}
+
+	return ProfileInfo{}, fmt.Errorf("unsupported profile '%s'. Supported: bicycle, car, motorcycle, pedestrian", raw)
+}
 
 // LRUCache implements a thread-safe in-memory LRU cache with TTL
 type cacheEntry struct {
@@ -198,18 +256,19 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// OSRM Internal Structures
+// OSRM compatibility structures (returned by Valhalla with format=osrm)
 type OsrmManeuver struct {
 	Type     string `json:"type,omitempty"`
 	Modifier string `json:"modifier,omitempty"`
 }
 
 type OsrmStep struct {
-	Distance float64                `json:"distance"`
-	Duration float64                `json:"duration"`
-	Maneuver *OsrmManeuver          `json:"maneuver,omitempty"`
-	Name     string                 `json:"name"`
-	Geometry map[string]interface{} `json:"geometry"`
+	Distance    float64                `json:"distance"`
+	Duration    float64                `json:"duration"`
+	Instruction string                 `json:"instruction,omitempty"`
+	Maneuver    *OsrmManeuver          `json:"maneuver,omitempty"`
+	Name        string                 `json:"name"`
+	Geometry    map[string]interface{} `json:"geometry"`
 }
 
 type OsrmLeg struct {
@@ -239,7 +298,21 @@ type OsrmResponse struct {
 	Durations [][]float64    `json:"durations,omitempty"`
 }
 
-// Clean Public API Models
+// Valhalla native matrix structures
+type ValhallaMatrixElement struct {
+	Distance  float64 `json:"distance"` // kilometers
+	Time      float64 `json:"time"`     // seconds
+	FromIndex int     `json:"from_index"`
+	ToIndex   int     `json:"to_index"`
+}
+
+type ValhallaMatrixResponse struct {
+	SourcesToTargets [][]ValhallaMatrixElement `json:"sources_to_targets"`
+	Error            string                    `json:"error,omitempty"`
+	ErrorCode        int                       `json:"error_code,omitempty"`
+}
+
+// Clean Public API Response Models
 type WaypointInfo struct {
 	Name     string     `json:"name"`
 	Location [2]float64 `json:"location"`
@@ -255,6 +328,7 @@ type RouteStep struct {
 }
 
 type DistanceResponse struct {
+	Profile         string        `json:"profile"`
 	DistanceKm      float64       `json:"distance_km"`
 	DurationMinutes float64       `json:"duration_minutes"`
 	DistanceMeters  int           `json:"distance_meters"`
@@ -264,6 +338,7 @@ type DistanceResponse struct {
 }
 
 type RouteResponse struct {
+	Profile         string        `json:"profile"`
 	DistanceKm      float64       `json:"distance_km"`
 	DurationMinutes float64       `json:"duration_minutes"`
 	DistanceMeters  int           `json:"distance_meters"`
@@ -275,6 +350,7 @@ type RouteResponse struct {
 }
 
 type MatrixResponse struct {
+	Profile          string         `json:"profile"`
 	DistancesKm      [][]float64    `json:"distances_km"`
 	DurationsMinutes [][]float64    `json:"durations_minutes"`
 	DistancesMeters  [][]int        `json:"distances_meters"`
@@ -283,9 +359,17 @@ type MatrixResponse struct {
 }
 
 type HealthResponse struct {
-	Status       string `json:"status"`
-	Backend      string `json:"backend"`
-	CachedRoutes int    `json:"cached_routes"`
+	Status         string   `json:"status"`
+	Backend        string   `json:"backend"`
+	Engine         string   `json:"engine"`
+	DefaultProfile string   `json:"default_profile"`
+	Profiles       []string `json:"profiles"`
+	CachedRoutes   int      `json:"cached_routes"`
+}
+
+type ProfilesResponse struct {
+	DefaultProfile string        `json:"default_profile"`
+	Profiles       []ProfileInfo `json:"profiles"`
 }
 
 func formatInstruction(m *OsrmManeuver, streetName string) string {
@@ -339,13 +423,37 @@ func formatInstruction(m *OsrmManeuver, streetName string) string {
 	}
 }
 
+// Dedicated connection-pooled HTTP client
 var httpClient = &http.Client{
 	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression: true,
+	},
 }
 
-func osrmGet(reqPath string) (*OsrmResponse, error) {
-	targetURL := strings.TrimRight(osrmURL, "/") + reqPath
-	resp, err := httpClient.Get(targetURL)
+// valhallaRoute queries Valhalla /route in OSRM-compatible format
+func valhallaRoute(from, to [2]float64, costing string, steps bool, shapeFormat string) (*OsrmResponse, error) {
+	reqBody := map[string]interface{}{
+		"locations": []map[string]float64{
+			{"lon": from[0], "lat": from[1]},
+			{"lon": to[0], "lat": to[1]},
+		},
+		"costing":             costing,
+		"format":              "osrm",
+		"shape_format":        shapeFormat,
+		"banner_instructions": false,
+	}
+
+	jsonBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	targetURL := strings.TrimRight(valhallaURL, "/") + "/route"
+	resp, err := httpClient.Post(targetURL, "application/json", bytes.NewReader(jsonBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -356,42 +464,124 @@ func osrmGet(reqPath string) (*OsrmResponse, error) {
 		return nil, err
 	}
 
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("valhalla error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
 	var osrmResp OsrmResponse
 	if err := json.Unmarshal(body, &osrmResp); err != nil {
-		return nil, fmt.Errorf("invalid OSRM response: %w", err)
+		return nil, fmt.Errorf("invalid Valhalla route response: %w", err)
 	}
+
 	return &osrmResp, nil
 }
 
+// valhallaMatrix queries Valhalla /sources_to_targets
+func valhallaMatrix(coords [][2]float64, costing string) (*ValhallaMatrixResponse, error) {
+	locs := make([]map[string]float64, len(coords))
+	for i, c := range coords {
+		locs[i] = map[string]float64{
+			"lon": c[0],
+			"lat": c[1],
+		}
+	}
+
+	reqBody := map[string]interface{}{
+		"sources": locs,
+		"targets": locs,
+		"costing": costing,
+	}
+
+	jsonBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	targetURL := strings.TrimRight(valhallaURL, "/") + "/sources_to_targets"
+	resp, err := httpClient.Post(targetURL, "application/json", bytes.NewReader(jsonBytes))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("valhalla matrix error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var matResp ValhallaMatrixResponse
+	if err := json.Unmarshal(body, &matResp); err != nil {
+		return nil, fmt.Errorf("invalid Valhalla matrix response: %w", err)
+	}
+
+	return &matResp, nil
+}
+
 func handleHealth(w http.ResponseWriter, r *http.Request) {
-	testURL := strings.TrimRight(osrmURL, "/") + "/route/v1/driving/38.7577,9.0128;38.7578,9.0129?overview=false"
+	testURL := strings.TrimRight(valhallaURL, "/") + "/status"
 	checkClient := http.Client{Timeout: 2 * time.Second}
 	resp, err := checkClient.Get(testURL)
 
+	profilesList := make([]string, 0, len(SupportedProfiles))
+	for name := range SupportedProfiles {
+		profilesList = append(profilesList, name)
+	}
+
 	if err != nil || resp.StatusCode >= 500 {
 		writeJSON(w, http.StatusServiceUnavailable, HealthResponse{
-			Status:       "degraded",
-			Backend:      "offline",
-			CachedRoutes: routeCache.Len(),
+			Status:         "degraded",
+			Backend:        "offline",
+			Engine:         "valhalla",
+			DefaultProfile: defaultProfile,
+			Profiles:       profilesList,
+			CachedRoutes:   routeCache.Len(),
 		})
 		return
 	}
 	defer resp.Body.Close()
 
 	writeJSON(w, http.StatusOK, HealthResponse{
-		Status:       "ok",
-		Backend:      "online",
-		CachedRoutes: routeCache.Len(),
+		Status:         "ok",
+		Backend:        "online",
+		Engine:         "valhalla",
+		DefaultProfile: defaultProfile,
+		Profiles:       profilesList,
+		CachedRoutes:   routeCache.Len(),
+	})
+}
+
+func handleProfiles(w http.ResponseWriter, r *http.Request) {
+	profiles := make([]ProfileInfo, 0, len(SupportedProfiles))
+	for _, p := range SupportedProfiles {
+		profiles = append(profiles, p)
+	}
+	writeJSON(w, http.StatusOK, ProfilesResponse{
+		DefaultProfile: defaultProfile,
+		Profiles:       profiles,
 	})
 }
 
 func handleRoute(w http.ResponseWriter, r *http.Request) {
 	from := r.URL.Query().Get("from")
 	to := r.URL.Query().Get("to")
+	profileParam := r.URL.Query().Get("profile")
+	if profileParam == "" {
+		profileParam = r.URL.Query().Get("mode")
+	}
 	steps := r.URL.Query().Get("steps") == "true"
 
 	if from == "" || to == "" {
 		writeError(w, http.StatusBadRequest, "from and to query parameters required")
+		return
+	}
+
+	profile, err := resolveProfile(profileParam)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -406,26 +596,17 @@ func handleRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheKey := fmt.Sprintf("route:%.5f,%.5f->%.5f,%.5f:steps=%t",
-		fromCoords[0], fromCoords[1], toCoords[0], toCoords[1], steps)
+	cacheKey := fmt.Sprintf("route:%s:%.5f,%.5f->%.5f,%.5f:steps=%t",
+		profile.Name, fromCoords[0], fromCoords[1], toCoords[0], toCoords[1], steps)
 
 	if cached, hit := routeCache.Get(cacheKey); hit {
 		writeCachedJSON(w, http.StatusOK, true, cached)
 		return
 	}
 
-	params := url.Values{}
-	params.Set("overview", "full")
-	params.Set("alternatives", "false")
-	params.Set("steps", strconv.FormatBool(steps))
-	params.Set("geometries", "geojson")
-
-	path := fmt.Sprintf("/route/v1/driving/%.5f,%.5f;%.5f,%.5f?%s",
-		fromCoords[0], fromCoords[1], toCoords[0], toCoords[1], params.Encode())
-
-	result, err := osrmGet(path)
+	result, err := valhallaRoute(fromCoords, toCoords, profile.Costing, steps, "geojson")
 	if err != nil {
-		log.Printf("Route error: %v", err)
+		log.Printf("Route calculation error [%s]: %v", profile.Name, err)
 		writeError(w, http.StatusInternalServerError, "Failed to calculate route")
 		return
 	}
@@ -459,8 +640,12 @@ func handleRoute(w http.ResponseWriter, r *http.Request) {
 					maneuverType = step.Maneuver.Type
 					maneuverMod = step.Maneuver.Modifier
 				}
+				instruction := step.Instruction
+				if instruction == "" {
+					instruction = formatInstruction(step.Maneuver, step.Name)
+				}
 				routeSteps = append(routeSteps, RouteStep{
-					Instruction:     formatInstruction(step.Maneuver, step.Name),
+					Instruction:     instruction,
 					StreetName:      step.Name,
 					DistanceMeters:  int(math.Round(step.Distance)),
 					DurationSeconds: int(math.Round(step.Duration)),
@@ -472,6 +657,7 @@ func handleRoute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := RouteResponse{
+		Profile:         profile.Name,
 		DistanceKm:      roundFloat(route.Distance/1000.0, 2),
 		DurationMinutes: roundFloat(route.Duration/60.0, 1),
 		DistanceMeters:  int(math.Round(route.Distance)),
@@ -495,9 +681,19 @@ func handleRoute(w http.ResponseWriter, r *http.Request) {
 func handleDistance(w http.ResponseWriter, r *http.Request) {
 	from := r.URL.Query().Get("from")
 	to := r.URL.Query().Get("to")
+	profileParam := r.URL.Query().Get("profile")
+	if profileParam == "" {
+		profileParam = r.URL.Query().Get("mode")
+	}
 
 	if from == "" || to == "" {
 		writeError(w, http.StatusBadRequest, "from and to query parameters required")
+		return
+	}
+
+	profile, err := resolveProfile(profileParam)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -512,20 +708,17 @@ func handleDistance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheKey := fmt.Sprintf("dist:%.5f,%.5f->%.5f,%.5f",
-		fromCoords[0], fromCoords[1], toCoords[0], toCoords[1])
+	cacheKey := fmt.Sprintf("dist:%s:%.5f,%.5f->%.5f,%.5f",
+		profile.Name, fromCoords[0], fromCoords[1], toCoords[0], toCoords[1])
 
 	if cached, hit := routeCache.Get(cacheKey); hit {
 		writeCachedJSON(w, http.StatusOK, true, cached)
 		return
 	}
 
-	path := fmt.Sprintf("/route/v1/driving/%.5f,%.5f;%.5f,%.5f?overview=false",
-		fromCoords[0], fromCoords[1], toCoords[0], toCoords[1])
-
-	result, err := osrmGet(path)
+	result, err := valhallaRoute(fromCoords, toCoords, profile.Costing, false, "no_shape")
 	if err != nil {
-		log.Printf("Distance error: %v", err)
+		log.Printf("Distance error [%s]: %v", profile.Name, err)
 		writeError(w, http.StatusInternalServerError, "Failed to calculate distance")
 		return
 	}
@@ -550,6 +743,7 @@ func handleDistance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := DistanceResponse{
+		Profile:         profile.Name,
 		DistanceKm:      roundFloat(route.Distance/1000.0, 2),
 		DurationMinutes: roundFloat(route.Duration/60.0, 1),
 		DistanceMeters:  int(math.Round(route.Distance)),
@@ -569,6 +763,7 @@ func handleDistance(w http.ResponseWriter, r *http.Request) {
 }
 
 type MatrixRequest struct {
+	Profile     string       `json:"profile,omitempty"`
 	Coordinates [][2]float64 `json:"coordinates"`
 }
 
@@ -590,6 +785,20 @@ func handleMatrix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	profileParam := req.Profile
+	if profileParam == "" {
+		profileParam = r.URL.Query().Get("profile")
+	}
+	if profileParam == "" {
+		profileParam = r.URL.Query().Get("mode")
+	}
+
+	profile, err := resolveProfile(profileParam)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	if len(req.Coordinates) < 2 {
 		writeError(w, http.StatusBadRequest, "coordinates array with at least 2 coordinate pairs required")
 		return
@@ -597,7 +806,6 @@ func handleMatrix(w http.ResponseWriter, r *http.Request) {
 
 	normalizedCoords := make([][2]float64, len(req.Coordinates))
 	coordStrs := make([]string, len(req.Coordinates))
-	indices := make([]string, len(req.Coordinates))
 
 	for i, c := range req.Coordinates {
 		lon, lat, err := normalizeAndValidate(c[0], c[1])
@@ -607,27 +815,26 @@ func handleMatrix(w http.ResponseWriter, r *http.Request) {
 		}
 		normalizedCoords[i] = [2]float64{lon, lat}
 		coordStrs[i] = fmt.Sprintf("%.5f,%.5f", lon, lat)
-		indices[i] = strconv.Itoa(i)
 	}
 
-	cacheKey := fmt.Sprintf("matrix:%s", strings.Join(coordStrs, ";"))
+	h := sha256.New()
+	h.Write([]byte(strings.Join(coordStrs, ";")))
+	hashStr := hex.EncodeToString(h.Sum(nil))
+	cacheKey := fmt.Sprintf("matrix:%s:%s", profile.Name, hashStr)
+
 	if cached, hit := routeCache.Get(cacheKey); hit {
 		writeCachedJSON(w, http.StatusOK, true, cached)
 		return
 	}
 
-	idxJoined := strings.Join(indices, ";")
-	path := fmt.Sprintf("/table/v1/driving/%s?sources=%s&destinations=%s&annotations=distance,duration",
-		strings.Join(coordStrs, ";"), idxJoined, idxJoined)
-
-	result, err := osrmGet(path)
+	result, err := valhallaMatrix(normalizedCoords, profile.Costing)
 	if err != nil {
-		log.Printf("Matrix error: %v", err)
+		log.Printf("Matrix error [%s]: %v", profile.Name, err)
 		writeError(w, http.StatusInternalServerError, "Failed to calculate matrix")
 		return
 	}
 
-	if result.Code != "Ok" {
+	if len(result.SourcesToTargets) == 0 {
 		writeError(w, http.StatusNotFound, "Could not compute matrix")
 		return
 	}
@@ -644,32 +851,25 @@ func handleMatrix(w http.ResponseWriter, r *http.Request) {
 		distancesMeters[i] = make([]int, n)
 		durationsSeconds[i] = make([]int, n)
 		for j := 0; j < n; j++ {
-			if i < len(result.Distances) && j < len(result.Distances[i]) {
-				rawDist := result.Distances[i][j]
-				distancesKm[i][j] = roundFloat(rawDist/1000.0, 2)
-				distancesMeters[i][j] = int(math.Round(rawDist))
-			}
-			if i < len(result.Durations) && j < len(result.Durations[i]) {
-				rawDur := result.Durations[i][j]
-				durationsMinutes[i][j] = roundFloat(rawDur/60.0, 1)
-				durationsSeconds[i][j] = int(math.Round(rawDur))
+			if i < len(result.SourcesToTargets) && j < len(result.SourcesToTargets[i]) {
+				elem := result.SourcesToTargets[i][j]
+				distancesKm[i][j] = roundFloat(elem.Distance, 2)
+				distancesMeters[i][j] = int(math.Round(elem.Distance * 1000.0))
+				durationsMinutes[i][j] = roundFloat(elem.Time/60.0, 1)
+				durationsSeconds[i][j] = int(math.Round(elem.Time))
 			}
 		}
 	}
 
 	waypoints := make([]WaypointInfo, len(normalizedCoords))
 	for i, c := range normalizedCoords {
-		name := ""
-		if i < len(result.Waypoints) {
-			name = result.Waypoints[i].Name
-		}
 		waypoints[i] = WaypointInfo{
-			Name:     name,
 			Location: c,
 		}
 	}
 
 	resp := MatrixResponse{
+		Profile:          profile.Name,
 		DistancesKm:      distancesKm,
 		DurationsMinutes: durationsMinutes,
 		DistancesMeters:  distancesMeters,
@@ -702,19 +902,17 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func findMapPath() string {
-	if custom := os.Getenv("OSRM_MAP_PATH"); custom != "" {
+func findValhallaConfig() string {
+	if custom := os.Getenv("VALHALLA_CONFIG"); custom != "" {
 		return custom
 	}
 	candidates := []string{
-		"/data/ethiopia-bicycle.osrm",
-		"/opt/osrm-data/ethiopia-bicycle.osrm",
-		"./ethiopia-bicycle.osrm",
+		"/custom_files/valhalla.json",
+		"/data/valhalla/valhalla.json",
+		"/opt/valhalla/valhalla.json",
+		"./valhalla.json",
 	}
 	for _, path := range candidates {
-		if _, err := os.Stat(path + ".mldgr"); err == nil {
-			return path
-		}
 		if _, err := os.Stat(path); err == nil {
 			return path
 		}
@@ -723,56 +921,53 @@ func findMapPath() string {
 }
 
 func startSupervisor() *exec.Cmd {
-	osrmBin, err := exec.LookPath("osrm-routed")
+	valhallaBin, err := exec.LookPath("valhalla_service")
 	if err != nil {
-		log.Printf("[Supervisor] osrm-routed binary not found in PATH; operating in standalone API mode")
+		log.Printf("[Supervisor] valhalla_service binary not found in PATH; operating in standalone API mode")
 		return nil
 	}
 
-	mapPath := findMapPath()
-	if mapPath == "" {
-		log.Printf("[Supervisor] No OSRM map dataset found; operating in standalone API mode")
+	configPath := findValhallaConfig()
+	if configPath == "" {
+		log.Printf("[Supervisor] No Valhalla config (valhalla.json) found; operating in standalone API mode")
 		return nil
 	}
 
-	_ = exec.Command("chmod", "-R", "777", "/opt/osrm-data", "/data").Run()
+	log.Printf("[Supervisor] Valhalla config found: %s", configPath)
+	threads := getEnv("VALHALLA_THREADS", "1")
+	log.Printf("[Supervisor] Starting valhalla_service with %s thread(s)...", threads)
 
-	log.Printf("[Supervisor] Map found: %s", mapPath)
-	log.Printf("[Supervisor] Starting osrm-routed with --mmap on 127.0.0.1:5000...")
-
-	cmd := exec.Command(osrmBin,
-		"--algorithm", "mld",
-		"--mmap",
-		"--max-table-size", "100",
-		"--ip", "127.0.0.1",
-		"--port", "5000",
-		mapPath,
-	)
+	cmd := exec.Command(valhallaBin, configPath, threads)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
-		log.Printf("[Supervisor] Failed to launch osrm-routed: %v", err)
+		log.Printf("[Supervisor] Failed to launch valhalla_service: %v", err)
 		return nil
 	}
 
-	log.Printf("[Supervisor] osrm-routed running with PID %d", cmd.Process.Pid)
+	log.Printf("[Supervisor] valhalla_service running with PID %d", cmd.Process.Pid)
 
 	ready := false
+	statusURL := strings.TrimRight(valhallaURL, "/") + "/status"
+	client := &http.Client{Timeout: 500 * time.Millisecond}
 	for i := 0; i < 60; i++ {
-		conn, err := net.DialTimeout("tcp", "127.0.0.1:5000", 250*time.Millisecond)
-		if err == nil {
-			conn.Close()
+		resp, err := client.Get(statusURL)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
 			ready = true
 			break
+		}
+		if resp != nil {
+			resp.Body.Close()
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	if ready {
-		log.Printf("[Supervisor] OSRM backend is healthy and listening on 127.0.0.1:5000")
+		log.Printf("[Supervisor] Valhalla backend is healthy and listening on %s", valhallaURL)
 	} else {
-		log.Printf("[Supervisor] WARNING: OSRM backend did not bind to port 5000 within 30s")
+		log.Printf("[Supervisor] WARNING: Valhalla backend did not report ready within 30s")
 	}
 
 	return cmd
@@ -783,6 +978,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/profiles", handleProfiles)
 	mux.HandleFunc("/route", handleRoute)
 	mux.HandleFunc("/distance", handleDistance)
 	mux.HandleFunc("/matrix", handleMatrix)
@@ -798,8 +994,9 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("OSRM Bicycle Routing Service listening on port %s", port)
-		log.Printf("OSRM Backend URL: %s", osrmURL)
+		log.Printf("Multi-Profile Navigation API listening on port %s", port)
+		log.Printf("Valhalla Backend URL: %s", valhallaURL)
+		log.Printf("Default Profile: %s", defaultProfile)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}
@@ -815,7 +1012,7 @@ func main() {
 	}
 
 	if cmd != nil && cmd.Process != nil {
-		log.Printf("[Supervisor] Terminating osrm-routed (PID %d)...", cmd.Process.Pid)
+		log.Printf("[Supervisor] Terminating valhalla_service (PID %d)...", cmd.Process.Pid)
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 
 		done := make(chan error, 1)
@@ -823,10 +1020,10 @@ func main() {
 
 		select {
 		case <-time.After(4 * time.Second):
-			log.Printf("[Supervisor] osrm-routed did not stop in time; killing...")
+			log.Printf("[Supervisor] valhalla_service did not stop in time; killing...")
 			_ = cmd.Process.Kill()
 		case err := <-done:
-			log.Printf("[Supervisor] osrm-routed exited: %v", err)
+			log.Printf("[Supervisor] valhalla_service exited: %v", err)
 		}
 	}
 

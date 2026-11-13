@@ -56,6 +56,50 @@ func TestRoundFloat(t *testing.T) {
 	}
 }
 
+func TestResolveProfile(t *testing.T) {
+	// Defaults
+	p, err := resolveProfile("")
+	if err != nil || p.Name != "bicycle" {
+		t.Fatalf("expected bicycle default, got %+v (err: %v)", p, err)
+	}
+
+	// Direct names
+	cases := []struct {
+		input   string
+		name    string
+		costing string
+	}{
+		{"car", "car", "auto"},
+		{"bicycle", "bicycle", "bicycle"},
+		{"motorcycle", "motorcycle", "motorcycle"},
+		{"pedestrian", "pedestrian", "pedestrian"},
+		{"auto", "car", "auto"},
+		{"driving", "car", "auto"},
+		{"moto", "motorcycle", "motorcycle"},
+		{"bike", "bicycle", "bicycle"},
+		{"cycling", "bicycle", "bicycle"},
+		{"walk", "pedestrian", "pedestrian"},
+		{"foot", "pedestrian", "pedestrian"},
+	}
+
+	for _, tc := range cases {
+		prof, err := resolveProfile(tc.input)
+		if err != nil {
+			t.Fatalf("unexpected error resolving %s: %v", tc.input, err)
+		}
+		if prof.Name != tc.name || prof.Costing != tc.costing {
+			t.Fatalf("for input %s: expected name=%s costing=%s, got name=%s costing=%s",
+				tc.input, tc.name, tc.costing, prof.Name, prof.Costing)
+		}
+	}
+
+	// Invalid profile
+	_, err = resolveProfile("spaceship")
+	if err == nil {
+		t.Fatal("expected error for invalid profile 'spaceship'")
+	}
+}
+
 func TestLRUCache(t *testing.T) {
 	cache := NewLRUCache(2, 50*time.Millisecond)
 
@@ -86,9 +130,9 @@ func TestLRUCache(t *testing.T) {
 }
 
 func TestHealthCheck(t *testing.T) {
-	origURL := osrmURL
-	osrmURL = "http://127.0.0.1:59999"
-	defer func() { osrmURL = origURL }()
+	origURL := valhallaURL
+	valhallaURL = "http://127.0.0.1:59999"
+	defer func() { valhallaURL = origURL }()
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -108,11 +152,11 @@ func TestHealthCheck(t *testing.T) {
 
 	mockBackend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.WriteHeader(http.StatusOK)
-		_, _ = rw.Write([]byte(`{"code":"Ok"}`))
+		_, _ = rw.Write([]byte(`{"version":"3.5.1"}`))
 	}))
 	defer mockBackend.Close()
 
-	osrmURL = mockBackend.URL
+	valhallaURL = mockBackend.URL
 	w2 := httptest.NewRecorder()
 	handleHealth(w2, req)
 
@@ -123,12 +167,34 @@ func TestHealthCheck(t *testing.T) {
 	if err := json.Unmarshal(w2.Body.Bytes(), &okResp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if okResp.Backend != "online" || okResp.Status != "ok" {
+	if okResp.Backend != "online" || okResp.Status != "ok" || okResp.Engine != "valhalla" {
 		t.Fatalf("unexpected ok response: %+v", okResp)
+	}
+	if len(okResp.Profiles) != 4 {
+		t.Fatalf("expected 4 supported profiles in health check, got %d", len(okResp.Profiles))
 	}
 }
 
-func TestDistanceEndpointAndCaching(t *testing.T) {
+func TestProfilesEndpoint(t *testing.T) {
+	req := httptest.NewRequest("GET", "/profiles", nil)
+	w := httptest.NewRecorder()
+	handleProfiles(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp ProfilesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode profiles response: %v", err)
+	}
+
+	if len(resp.Profiles) != 4 {
+		t.Fatalf("expected 4 profiles, got %d", len(resp.Profiles))
+	}
+}
+
+func TestDistanceEndpointWithProfileAndCaching(t *testing.T) {
 	routeCache.Purge()
 
 	backendCalls := 0
@@ -151,12 +217,12 @@ func TestDistanceEndpointAndCaching(t *testing.T) {
 	}))
 	defer mockBackend.Close()
 
-	origURL := osrmURL
-	osrmURL = mockBackend.URL
-	defer func() { osrmURL = origURL }()
+	origURL := valhallaURL
+	valhallaURL = mockBackend.URL
+	defer func() { valhallaURL = origURL }()
 
-	// Cache MISS
-	req1 := httptest.NewRequest("GET", "/distance?from=38.7577,9.0128&to=38.7891,9.0054", nil)
+	// 1. Car Request (MISS)
+	req1 := httptest.NewRequest("GET", "/distance?from=38.7577,9.0128&to=38.7891,9.0054&profile=car", nil)
 	w1 := httptest.NewRecorder()
 	handleDistance(w1, req1)
 
@@ -171,12 +237,12 @@ func TestDistanceEndpointAndCaching(t *testing.T) {
 	if err := json.Unmarshal(w1.Body.Bytes(), &dist); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if dist.DistanceKm != 4.8 || dist.DurationMinutes != 5.0 || dist.Origin.Name != "Origin St" {
+	if dist.Profile != "car" || dist.DistanceKm != 4.8 || dist.DurationMinutes != 5.0 {
 		t.Fatalf("unexpected distance result: %+v", dist)
 	}
 
-	// Cache HIT (with swapped lat,lon)
-	req2 := httptest.NewRequest("GET", "/distance?from=9.0128,38.7577&to=9.0054,38.7891", nil)
+	// 2. Car Request (HIT)
+	req2 := httptest.NewRequest("GET", "/distance?from=9.0128,38.7577&to=9.0054,38.7891&profile=auto", nil)
 	w2 := httptest.NewRecorder()
 	handleDistance(w2, req2)
 
@@ -189,9 +255,21 @@ func TestDistanceEndpointAndCaching(t *testing.T) {
 	if backendCalls != 1 {
 		t.Fatalf("expected 1 backend call due to cache, got %d", backendCalls)
 	}
+
+	// 3. Bicycle Request (different profile => Cache MISS)
+	req3 := httptest.NewRequest("GET", "/distance?from=38.7577,9.0128&to=38.7891,9.0054&profile=bicycle", nil)
+	w3 := httptest.NewRecorder()
+	handleDistance(w3, req3)
+
+	if w3.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("expected X-Cache MISS for distinct profile, got %s", w3.Header().Get("X-Cache"))
+	}
+	if backendCalls != 2 {
+		t.Fatalf("expected 2 backend calls, got %d", backendCalls)
+	}
 }
 
-func TestRouteEndpoint(t *testing.T) {
+func TestRouteEndpointWithProfileAndSteps(t *testing.T) {
 	routeCache.Purge()
 
 	mockBackend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
@@ -208,10 +286,11 @@ func TestRouteEndpoint(t *testing.T) {
 							Duration: 180.0,
 							Steps: []OsrmStep{
 								{
-									Distance: 1200.0,
-									Duration: 180.0,
-									Name:     "Main St",
-									Maneuver: &OsrmManeuver{Type: "depart", Modifier: "straight"},
+									Distance:    1200.0,
+									Duration:    180.0,
+									Instruction: "Head north on Main St",
+									Name:        "Main St",
+									Maneuver:    &OsrmManeuver{Type: "depart", Modifier: "straight"},
 								},
 							},
 						},
@@ -227,11 +306,11 @@ func TestRouteEndpoint(t *testing.T) {
 	}))
 	defer mockBackend.Close()
 
-	origURL := osrmURL
-	osrmURL = mockBackend.URL
-	defer func() { osrmURL = origURL }()
+	origURL := valhallaURL
+	valhallaURL = mockBackend.URL
+	defer func() { valhallaURL = origURL }()
 
-	req := httptest.NewRequest("GET", "/route?from=38.7577,9.0128&to=38.7891,9.0054&steps=true", nil)
+	req := httptest.NewRequest("GET", "/route?from=38.7577,9.0128&to=38.7891,9.0054&profile=motorcycle&steps=true", nil)
 	w := httptest.NewRecorder()
 	handleRoute(w, req)
 
@@ -242,39 +321,36 @@ func TestRouteEndpoint(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &route); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if route.DistanceKm != 1.2 || len(route.Steps) != 1 || route.Steps[0].Instruction != "Head out on Main St" {
+	if route.Profile != "motorcycle" || route.DistanceKm != 1.2 || len(route.Steps) != 1 || route.Steps[0].Instruction != "Head north on Main St" {
 		t.Fatalf("unexpected route response: %+v", route)
 	}
 }
 
-func TestMatrixEndpoint(t *testing.T) {
+func TestMatrixEndpointWithProfile(t *testing.T) {
 	routeCache.Purge()
 
 	mockBackend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		osrmRes := OsrmResponse{
-			Code: "Ok",
-			Distances: [][]float64{
-				{0, 1500},
-				{1500, 0},
-			},
-			Durations: [][]float64{
-				{0, 180},
-				{180, 0},
-			},
-			Waypoints: []OsrmWaypoint{
-				{Location: [2]float64{38.7577, 9.0128}, Name: "Point 1"},
-				{Location: [2]float64{38.7891, 9.0054}, Name: "Point 2"},
+		matRes := ValhallaMatrixResponse{
+			SourcesToTargets: [][]ValhallaMatrixElement{
+				{
+					{Distance: 0.0, Time: 0.0, FromIndex: 0, ToIndex: 0},
+					{Distance: 1.5, Time: 180.0, FromIndex: 0, ToIndex: 1},
+				},
+				{
+					{Distance: 1.5, Time: 180.0, FromIndex: 1, ToIndex: 0},
+					{Distance: 0.0, Time: 0.0, FromIndex: 1, ToIndex: 1},
+				},
 			},
 		}
-		_ = json.NewEncoder(rw).Encode(osrmRes)
+		_ = json.NewEncoder(rw).Encode(matRes)
 	}))
 	defer mockBackend.Close()
 
-	origURL := osrmURL
-	osrmURL = mockBackend.URL
-	defer func() { osrmURL = origURL }()
+	origURL := valhallaURL
+	valhallaURL = mockBackend.URL
+	defer func() { valhallaURL = origURL }()
 
-	body := `{"coordinates": [[9.0128, 38.7577], [9.0054, 38.7891]]}`
+	body := `{"profile": "pedestrian", "coordinates": [[9.0128, 38.7577], [9.0054, 38.7891]]}`
 	req := httptest.NewRequest("POST", "/matrix", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	handleMatrix(w, req)
@@ -286,7 +362,13 @@ func TestMatrixEndpoint(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &matrix); err != nil {
 		t.Fatalf("failed to decode matrix response: %v", err)
 	}
+	if matrix.Profile != "pedestrian" {
+		t.Fatalf("expected pedestrian profile, got %s", matrix.Profile)
+	}
 	if matrix.DistancesKm[0][1] != 1.5 || matrix.DurationsMinutes[0][1] != 3.0 {
 		t.Fatalf("unexpected matrix response: %+v", matrix)
+	}
+	if matrix.DistancesMeters[0][1] != 1500 || matrix.DurationsSeconds[0][1] != 180 {
+		t.Fatalf("unexpected meters/seconds matrix: %+v", matrix)
 	}
 }

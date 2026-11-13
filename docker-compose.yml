@@ -1,15 +1,20 @@
 services:
-  osrm:
+  navigation-api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: osrm-bicycle-service
+    container_name: valhalla-navigation-service
     ports:
       - "3000:3000"
     environment:
       - PORT=3000
+      - VALHALLA_URL=http://127.0.0.1:8002
+      - DEFAULT_PROFILE=bicycle
+      - VALHALLA_THREADS=1
+      - GOMEMLIMIT=48MiB
+      - GOGC=50
     volumes:
-      - ./osrm-data:/data
+      - ./custom_files:/custom_files
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
@@ -17,3 +22,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 500M
