@@ -1,41 +1,44 @@
-# Multi-Profile Navigation Service (Ethiopia)
+# Ethiopia Navigation & Routing API
 
-High-performance, ultra-lean multi-modal navigation, routing, and matrix calculation service for Ethiopia. Built with **Valhalla** and **100% Go**. Engineered specifically for 512 MB RAM environments on **Koyeb**, **Railway**, **Render**, or any low-resource VPS.
+A high-performance, multi-modal routing, navigation, and distance matrix API for Ethiopia. Built with **Go** and powered by the **Valhalla** routing engine.
 
----
-
-## Why Valhalla + Go?
-
-Unlike traditional OSRM setups which require a separate ~500 MB–1 GB static graph per vehicle mode, **Valhalla compiles hierarchical vector tiles once for the entire map**. 
-
-- **All 4 Profiles in One Process**: Simultaneously routes **Car**, **Motorcycle**, **Bicycle**, and **Pedestrian** dynamically at query time.
-- **Ultra-Low Memory Footprint**: Uses only **~120–180 MB of RAM total**, comfortably running inside 512 MB free-tier containers with zero risk of OOM kills.
-- **Clean Go API & Supervisor**: A single binary serves the HTTP API, manages the LRU cache, auto-corrects coordinates, and acts as PID 1 supervisor managing `valhalla_service`.
+Engineered for ultra-low memory environments (running comfortably under **200 MB RAM**), high throughput, and sub-millisecond cached responses.
 
 ---
 
-## Supported Routing Profiles
+## Features
+
+- **Multi-Modal Routing**: Native query-time routing for **Car**, **Motorcycle**, **Bicycle**, and **Pedestrian** modes on a unified hierarchical tile graph.
+- **Clean REST API**: Simplified, flat JSON responses for road distances, travel durations, turn-by-turn steps, and GeoJSON geometries.
+- **Sub-Millisecond In-Memory LRU Cache**: Thread-safe in-memory cache with 24-hour TTL serving repeated queries in **< 1 ms** with automatic profile isolation.
+- **Smart Coordinate Auto-Correction**: Accepts both `lon,lat` and `lat,lon` formats, automatically detecting and correcting orientation for the Ethiopia geographic bounding box (~1.1m precision).
+- **Time-Distance Matrix**: Fast N×N matrix calculation for origin-destination pairs.
+- **Single-Binary Process Supervisor**: The Go server acts as PID 1, supervising the routing backend, conducting health probes, and handling graceful shutdowns.
+
+---
+
+## Supported Profiles
 
 | Profile | Valhalla Costing | Aliases | Description |
 | :--- | :--- | :--- | :--- |
-| **`bicycle`** *(Default)* | `bicycle` | `bike`, `cycling` | Prioritizes cycling paths, tracks, and quiet streets |
+| **`bicycle`** *(Default)* | `bicycle` | `bike`, `cycling` | Prioritizes cycle tracks, bike paths, and quiet roads |
 | **`car`** | `auto` | `auto`, `driving`, `automobile` | Standard vehicle routing based on speed limits and road classes |
-| **`motorcycle`** | `motorcycle` | `moto`, `motorbike` | Fast, agile routing with flexible road traversal |
-| **`pedestrian`** | `pedestrian` | `walk`, `foot`, `walking` | Walking routes utilizing sidewalks, crosswalks, and footpaths |
+| **`motorcycle`** | `motorcycle` | `moto`, `motorbike` | Fast, agile routing with flexible road and track traversal |
+| **`pedestrian`** | `pedestrian` | `walk`, `foot`, `walking` | Walking routes utilizing sidewalks, crosswalks, and footways |
 
 ---
 
-## API Endpoints
+## API Reference
 
 ### 1. `GET /health`
 
-Active probe verifying backend connectivity, engine, and cache status.
+Health check endpoint verifying the HTTP server, routing backend status, and active cache count.
 
 ```bash
-curl https://your-domain.app/health
+curl https://peculiar-rina-sharenex-b86b2492.koyeb.app/health
 ```
 
-Response (`200 OK`):
+**Response (`200 OK`):**
 ```json
 {
   "status": "ok",
@@ -56,13 +59,13 @@ Response (`200 OK`):
 
 ### 2. `GET /profiles`
 
-Lists available routing profiles, costing models, and aliases.
+Lists available routing profiles, their underlying costing models, aliases, and descriptions.
 
 ```bash
-curl https://your-domain.app/profiles
+curl https://peculiar-rina-sharenex-b86b2492.koyeb.app/profiles
 ```
 
-Response (`200 OK`):
+**Response (`200 OK`):**
 ```json
 {
   "default_profile": "bicycle",
@@ -99,29 +102,25 @@ Response (`200 OK`):
 
 ### 3. `GET /distance`
 
-Calculates road distance and travel duration between two points for any profile.
+Calculates road distance and travel duration between two coordinates for any profile.
 
-Query parameters:
-- `from`: starting coordinates (`lon,lat` or `lat,lon`)
-- `to`: destination coordinates (`lon,lat` or `lat,lon`)
-- `profile` (optional): `car`, `motorcycle`, `bicycle`, or `pedestrian` (default: `bicycle`)
+**Query Parameters:**
+- `from` *(required)*: Starting point (`lon,lat` or `lat,lon`)
+- `to` *(required)*: Destination point (`lon,lat` or `lat,lon`)
+- `profile` *(optional)*: `car`, `motorcycle`, `bicycle`, or `pedestrian` (default: `bicycle`)
 
 ```bash
-# Car distance & travel time
-curl "https://your-domain.app/distance?from=38.7577,9.0128&to=38.7891,9.0054&profile=car"
-
-# Motorcycle distance & travel time
-curl "https://your-domain.app/distance?from=38.7577,9.0128&to=38.7891,9.0054&profile=motorcycle"
+curl "https://peculiar-rina-sharenex-b86b2492.koyeb.app/distance?from=38.7577,9.0128&to=38.7891,9.0054&profile=car"
 ```
 
-Response (`200 OK`):
+**Response (`200 OK`):**
 ```json
 {
   "profile": "car",
-  "distance_km": 4.09,
-  "duration_minutes": 10.5,
-  "distance_meters": 4088,
-  "duration_seconds": 630,
+  "distance_km": 4.82,
+  "duration_minutes": 5.5,
+  "distance_meters": 4822,
+  "duration_seconds": 329,
   "origin": {
     "name": "Ras Desta Damtew Street",
     "location": [38.75739, 9.01284]
@@ -137,26 +136,26 @@ Response (`200 OK`):
 
 ### 4. `GET /route`
 
-Full route geometry (GeoJSON `LineString`) and turn-by-turn navigation instructions.
+Full route calculation returning GeoJSON `LineString` geometry and optional turn-by-turn navigation instructions.
 
-Query parameters:
-- `from`: starting coordinates (`lon,lat` or `lat,lon`)
-- `to`: destination coordinates (`lon,lat` or `lat,lon`)
-- `profile` (optional): `car`, `motorcycle`, `bicycle`, `pedestrian` (default: `bicycle`)
-- `steps`: `true` or `false` (optional, default: `false`)
+**Query Parameters:**
+- `from` *(required)*: Starting point (`lon,lat` or `lat,lon`)
+- `to` *(required)*: Destination point (`lon,lat` or `lat,lon`)
+- `profile` *(optional)*: `car`, `motorcycle`, `bicycle`, or `pedestrian` (default: `bicycle`)
+- `steps` *(optional)*: `true` or `false` (default: `false`)
 
 ```bash
-curl "https://your-domain.app/route?from=38.7577,9.0128&to=38.7891,9.0054&profile=motorcycle&steps=true"
+curl "https://peculiar-rina-sharenex-b86b2492.koyeb.app/route?from=38.7577,9.0128&to=38.7891,9.0054&profile=bicycle&steps=true"
 ```
 
-Response (`200 OK`):
+**Response (`200 OK`):**
 ```json
 {
-  "profile": "motorcycle",
-  "distance_km": 4.09,
-  "duration_minutes": 8.5,
-  "distance_meters": 4088,
-  "duration_seconds": 510,
+  "profile": "bicycle",
+  "distance_km": 4.61,
+  "duration_minutes": 16.9,
+  "distance_meters": 4615,
+  "duration_seconds": 1013,
   "origin": {
     "name": "Ras Desta Damtew Street",
     "location": [38.75739, 9.01284]
@@ -178,7 +177,7 @@ Response (`200 OK`):
       "instruction": "Head right on Ras Desta Damtew Street",
       "street_name": "Ras Desta Damtew Street",
       "distance_meters": 313,
-      "duration_seconds": 45,
+      "duration_seconds": 81,
       "type": "depart",
       "modifier": "right"
     },
@@ -186,7 +185,7 @@ Response (`200 OK`):
       "instruction": "Turn left onto Jomo Kenyatta Avenue",
       "street_name": "Jomo Kenyatta Avenue",
       "distance_meters": 1058,
-      "duration_seconds": 150,
+      "duration_seconds": 294,
       "type": "turn",
       "modifier": "left"
     }
@@ -198,12 +197,12 @@ Response (`200 OK`):
 
 ### 5. `POST /matrix`
 
-Compute distance and travel duration matrices between multiple coordinate pairs.
+Calculates distance and travel duration matrices between multiple coordinate pairs.
 
-Request body:
+**Request Body:**
 ```json
 {
-  "profile": "car",
+  "profile": "motorcycle",
   "coordinates": [
     [38.7577, 9.0128],
     [38.7891, 9.0054],
@@ -212,59 +211,67 @@ Request body:
 }
 ```
 
-Response (`200 OK`):
+**Response (`200 OK`):**
 ```json
 {
-  "profile": "car",
+  "profile": "motorcycle",
   "distances_km": [
-    [0.0, 4.09, 2.91],
-    [4.33, 0.0, 3.38],
-    [2.60, 3.30, 0.0]
+    [0.0, 4.82, 4.29],
+    [5.4, 0.0, 4.28],
+    [2.92, 3.91, 0.0]
   ],
   "durations_minutes": [
-    [0.0, 10.5, 7.2],
-    [11.2, 0.0, 8.4],
-    [6.8, 8.1, 0.0]
+    [0.0, 5.5, 5.2],
+    [6.5, 0.0, 5.2],
+    [3.7, 4.5, 0.0]
   ],
   "distances_meters": [
-    [0, 4088, 2906],
-    [4327, 0, 3377],
-    [2599, 3299, 0]
+    [0, 4822, 4287],
+    [5395, 0, 4275],
+    [2924, 3905, 0]
   ],
   "durations_seconds": [
-    [0, 630, 432],
-    [672, 0, 504],
-    [408, 486, 0]
+    [0, 329, 314],
+    [391, 0, 310],
+    [223, 270, 0]
   ],
   "waypoints": [
-    { "name": "", "location": [38.75770, 9.01280] },
-    { "name": "", "location": [38.78910, 9.00540] },
-    { "name": "", "location": [38.77000, 9.02000] }
+    { "name": "", "location": [38.7577, 9.0128] },
+    { "name": "", "location": [38.7891, 9.0054] },
+    { "name": "", "location": [38.7700, 9.0200] }
   ]
 }
 ```
 
 ---
 
-## Smart Features
+## Configuration
 
-1. **Profile Isolation in LRU Cache**:
-   - Cache keys are strictly namespaced by profile (`dist:car:...` vs `dist:bicycle:...`), preventing cross-profile collisions while maintaining **< 1 ms** responses for repeated routes.
-2. **Smart Coordinate Auto-Correction**:
-   - Seamlessly accepts either `lon,lat` or `lat,lon` and auto-corrects them for Ethiopia (lat: 3.0°–15.5°N, lon: 32.0°–48.5°E), rounded to 5 decimal places (~1.1m precision).
-3. **PID 1 Process Supervisor**:
-   - The Go binary handles signals (`SIGINT`, `SIGTERM`), supervises `valhalla_service`, conducts startup health probes, and performs graceful shutdowns.
+The service is configured using standard environment variables:
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `PORT` | `3000` | HTTP port for the API server |
+| `DEFAULT_PROFILE` | `bicycle` | Default profile when `profile` is omitted in requests |
+| `VALHALLA_URL` | `http://127.0.0.1:8002` | Valhalla daemon listen URL |
+| `VALHALLA_THREADS` | `1` | Worker thread count for Valhalla engine |
+| `STRICT_BOUNDS` | `true` | Restrict coordinates to the Ethiopia bounding box |
+| `GOMEMLIMIT` | `48MiB` | Go runtime memory ceiling to prevent GC spikes |
+| `GOGC` | `50` | Go garbage collection frequency |
 
 ---
 
-## Deployment
+## Local Development
 
-### Railway / Koyeb / Render (512 MB Free Tier)
+### Run with Docker Compose
 
-Deploy directly using the repository Dockerfile. The container uses multi-stage builds and runs under 200 MB RAM:
+```bash
+docker compose up --build
+```
 
-- `PORT`: `3000`
-- `DEFAULT_PROFILE`: `bicycle` (or `car`)
-- `VALHALLA_THREADS`: `1`
-- `GOMEMLIMIT`: `48MiB`
-- `GOGC`: `50`
+### Run Unit Tests
+
+```bash
+cd api
+go test -v ./...
+```
