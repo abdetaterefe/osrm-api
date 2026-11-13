@@ -1,12 +1,17 @@
-# OSRM runtime data files
+# OSRM & Valhalla runtime data files
 osrm-data/
 osrm-data-test/
+valhalla-data/
+custom_files/
 *.pbf
 *.osrm*
+*.tar
+*.tar.gz
 
 # Go build artifacts
 api/bin/
 api/server
+api/api-server
 api/*.exe
 
 # Logs

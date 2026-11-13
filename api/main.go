@@ -263,12 +263,12 @@ type OsrmManeuver struct {
 }
 
 type OsrmStep struct {
-	Distance    float64                `json:"distance"`
-	Duration    float64                `json:"duration"`
-	Instruction string                 `json:"instruction,omitempty"`
-	Maneuver    *OsrmManeuver          `json:"maneuver,omitempty"`
-	Name        string                 `json:"name"`
-	Geometry    map[string]interface{} `json:"geometry"`
+	Distance    float64       `json:"distance"`
+	Duration    float64       `json:"duration"`
+	Instruction string        `json:"instruction,omitempty"`
+	Maneuver    *OsrmManeuver `json:"maneuver,omitempty"`
+	Name        string        `json:"name"`
+	Geometry    interface{}   `json:"geometry,omitempty"`
 }
 
 type OsrmLeg struct {
