@@ -1,4 +1,9 @@
 osrm-data/
+valhalla-data/
+benchmarks/
+*.tar.gz
+*.tar
+*.pbf
 api/bin/
 .git/
 *.log
