@@ -350,7 +350,7 @@ func TestSearchEndpoint(t *testing.T) {
 			t.Errorf("expected custom User-Agent, got %q", got)
 		}
 		_, _ = rw.Write([]byte(`[
-			{"place_id":123,"osm_type":"node","osm_id":456,"name":"Posta","display_name":"Posta, Adama, Oromia, Ethiopia","lat":"8.54000","lon":"39.27000","class":"amenity","type":"post_office","address":{"city":"Adama","amenity":"post office"}},
+			{"place_id":123,"osm_type":"node","osm_id":456,"name":"Posta","display_name":"Posta, Adama, Oromia, Ethiopia","lat":"8.54000","lon":"39.27000","category":"amenity","type":"post_office","address":{"city":"Adama","amenity":"post office"}},
 			{"place_id":124,"osm_type":"way","osm_id":789,"display_name":"ASTU Gate 1, Adama, Ethiopia","lat":"8.55000","lon":"39.28000","class":"highway","type":"residential","address":{"road":"ASTU Gate 1"}}
 		]`))
 	}))

@@ -410,7 +410,8 @@ type nominatimResult struct {
 	DisplayName string            `json:"display_name"`
 	Lat         string            `json:"lat"`
 	Lon         string            `json:"lon"`
-	Category    string            `json:"class"`
+	Category    string            `json:"category"`
+	LegacyClass string            `json:"class"`
 	Type        string            `json:"type"`
 	Address     map[string]string `json:"address"`
 	BoundingBox []string          `json:"boundingbox"`
@@ -688,11 +689,16 @@ func placeFromNominatim(n nominatimResult) (Place, error) {
 		id = fmt.Sprintf("%s-%d", n.OsmType, n.OsmID)
 	}
 
+	category := n.Category
+	if category == "" {
+		category = n.LegacyClass
+	}
+
 	return Place{
 		ID:          id,
 		Name:        name,
 		DisplayName: n.DisplayName,
-		Category:    n.Category,
+		Category:    category,
 		Type:        n.Type,
 		Location:    [2]float64{roundFloat(lon, 5), roundFloat(lat, 5)},
 	}, nil
