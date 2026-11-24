@@ -257,7 +257,7 @@ Finds places by name. Backed by OpenStreetMap Nominatim, cached for 24 hours, an
 - `near` *(optional)*: `lon,lat` or `lat,lon` point used to **rank** results by distance within the chosen area. It never widens the area scope.
 
 ```bash
-curl "https://peculiar-rina-sharenex-b86b2492.koyeb.app/search?q=posta&area=Adama&near=39.27,8.54&limit=5"
+curl "https://peculiar-rina-sharenex-b86b2492.koyeb.app/search?q=hospital&area=Adama&near=39.27,8.54&limit=3"
 ```
 
 A consuming app can pass any Ethiopian city, region, or state as `area` — the API itself has no hardcoded city default.
@@ -265,15 +265,15 @@ A consuming app can pass any Ethiopian city, region, or state as `area` — the 
 **Response (`200 OK`):**
 ```json
 {
-  "query": "posta",
+  "query": "hospital",
   "results": [
     {
-      "id": "node-456",
-      "name": "Posta",
-      "display_name": "Posta, Adama, Oromia, Ethiopia",
+      "id": "way-787549797",
+      "name": "Adama General Hospital",
+      "display_name": "Adama General Hospital, Haile Fida Street, Adama, Oromia Region, 0408, Ethiopia",
       "category": "amenity",
-      "type": "post_office",
-      "location": [39.27, 8.54]
+      "type": "hospital",
+      "location": [39.28279, 8.56146]
     }
   ]
 }
