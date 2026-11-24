@@ -12,11 +12,9 @@ import (
 	"log"
 	"math"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,12 +27,6 @@ var (
 	port           = getEnv("PORT", "3000")
 	defaultProfile = getEnv("DEFAULT_PROFILE", "bicycle")
 	strictBounds   = getEnv("STRICT_BOUNDS", "true") == "true"
-
-	// Geocoding provider used by /search and /reverse. Kept behind our own API
-	// shape so the provider can be swapped without changing consumers.
-	geocoderURL        = getEnv("GEOCODER_URL", "https://nominatim.openstreetmap.org")
-	geocoderUserAgent  = getEnv("GEOCODER_USER_AGENT", "amana-osrm-api/1.0 (place search for Amana Delivery; contact: admin@amana.com)")
-	geocodeMinInterval = 1000 * time.Millisecond
 )
 
 const (
@@ -401,22 +393,6 @@ type ReverseResponse struct {
 	Location [2]float64 `json:"location"` // [lon, lat]
 }
 
-// nominatimResult is the subset of a Nominatim jsonv2 result we consume.
-type nominatimResult struct {
-	PlaceID     int               `json:"place_id"`
-	OsmType     string            `json:"osm_type"`
-	OsmID       int64             `json:"osm_id"`
-	Name        string            `json:"name"`
-	DisplayName string            `json:"display_name"`
-	Lat         string            `json:"lat"`
-	Lon         string            `json:"lon"`
-	Category    string            `json:"category"`
-	LegacyClass string            `json:"class"`
-	Type        string            `json:"type"`
-	Address     map[string]string `json:"address"`
-	BoundingBox []string          `json:"boundingbox"`
-}
-
 func formatInstruction(m *OsrmManeuver, streetName string) string {
 	target := streetName
 	if target == "" {
@@ -612,154 +588,8 @@ func handleProfiles(w http.ResponseWriter, r *http.Request) {
 
 // searchCache keeps geocoding responses off the upstream provider. Search
 // results change slowly, so a day-long TTL is plenty and keeps us well within
-// Nominatim's usage policy.
+// the public Photon instance's fair-use limits.
 var searchCache = NewLRUCache(2000, 24*time.Hour)
-
-type geocodeLimiter struct {
-	mu       sync.Mutex
-	next     time.Time
-	interval time.Duration
-}
-
-// wait serialises upstream calls so we never exceed one request per second.
-func (l *geocodeLimiter) wait() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	now := time.Now()
-	if now.Before(l.next) {
-		time.Sleep(l.next.Sub(now))
-		now = time.Now()
-	}
-	l.next = now.Add(l.interval)
-}
-
-var geocoderLimiter = &geocodeLimiter{interval: geocodeMinInterval}
-
-func nominatimGet(path string, params url.Values) ([]byte, error) {
-	geocoderLimiter.wait()
-
-	targetURL := strings.TrimRight(geocoderURL, "/") + path + "?" + params.Encode()
-	req, err := http.NewRequest(http.MethodGet, targetURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", geocoderUserAgent)
-	req.Header.Set("Accept-Language", "en")
-
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("geocoder error (HTTP %d): %s", resp.StatusCode, string(body))
-	}
-	return body, nil
-}
-
-func placeFromNominatim(n nominatimResult) (Place, error) {
-	lat, errLat := strconv.ParseFloat(n.Lat, 64)
-	lon, errLon := strconv.ParseFloat(n.Lon, 64)
-	if errLat != nil || errLon != nil {
-		return Place{}, fmt.Errorf("invalid coordinates in geocoder result")
-	}
-
-	name := n.Name
-	if name == "" {
-		for _, key := range []string{"amenity", "building", "place", "shop", "tourism", "road", "neighbourhood", "suburb", "city", "town", "village"} {
-			if value := n.Address[key]; value != "" {
-				name = value
-				break
-			}
-		}
-	}
-	if name == "" && n.DisplayName != "" {
-		name = strings.TrimSpace(strings.SplitN(n.DisplayName, ",", 2)[0])
-	}
-
-	id := strconv.Itoa(n.PlaceID)
-	if n.OsmType != "" {
-		id = fmt.Sprintf("%s-%d", n.OsmType, n.OsmID)
-	}
-
-	category := n.Category
-	if category == "" {
-		category = n.LegacyClass
-	}
-
-	return Place{
-		ID:          id,
-		Name:        name,
-		DisplayName: n.DisplayName,
-		Category:    category,
-		Type:        n.Type,
-		Location:    [2]float64{roundFloat(lon, 5), roundFloat(lat, 5)},
-	}, nil
-}
-
-func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
-	const radius = 6371.0
-	dLat := (lat2 - lat1) * math.Pi / 180
-	dLon := (lon2 - lon1) * math.Pi / 180
-	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
-		math.Cos(lat1*math.Pi/180)*math.Cos(lat2*math.Pi/180)*math.Sin(dLon/2)*math.Sin(dLon/2)
-	return radius * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
-}
-
-// areaBounds resolves an arbitrary place name (city, region, state, ...) to a
-// bounding box. Results are cached so an area is only looked up once.
-// Returns [west, south, east, north].
-func areaBounds(area string) ([4]float64, error) {
-	var bounds [4]float64
-	key := "area:" + strings.ToLower(strings.TrimSpace(area))
-	if cached, ok := searchCache.Get(key); ok {
-		if err := json.Unmarshal(cached, &bounds); err == nil {
-			return bounds, nil
-		}
-	}
-
-	params := url.Values{}
-	params.Set("q", area)
-	params.Set("format", "jsonv2")
-	params.Set("limit", "1")
-	params.Set("countrycodes", "et")
-
-	body, err := nominatimGet("/search", params)
-	if err != nil {
-		return bounds, err
-	}
-	var results []nominatimResult
-	if err := json.Unmarshal(body, &results); err != nil || len(results) == 0 || len(results[0].BoundingBox) != 4 {
-		return bounds, fmt.Errorf("no bounds found for area %q", area)
-	}
-
-	bb := results[0].BoundingBox
-	values := [4]float64{}
-	for i, raw := range bb {
-		value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-		if err != nil {
-			return bounds, fmt.Errorf("invalid bounds for area %q", area)
-		}
-		values[i] = value
-	}
-	// Nominatim returns [south, north, west, east].
-	bounds = [4]float64{values[2], values[0], values[3], values[1]}
-	if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
-		return bounds, fmt.Errorf("invalid bounds for area %q", area)
-	}
-
-	if jsonBytes, err := json.Marshal(bounds); err == nil {
-		searchCache.Set(key, jsonBytes)
-	}
-	return bounds, nil
-}
 
 func handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -783,71 +613,28 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		area = strings.TrimSpace(r.URL.Query().Get("city"))
 	}
 
-	near := strings.TrimSpace(r.URL.Query().Get("near"))
-	var nearCoords [2]float64
-	if near != "" {
-		parsed, err := parseCoords(near)
+	var near *[2]float64
+	nearKey := ""
+	if rawNear := strings.TrimSpace(r.URL.Query().Get("near")); rawNear != "" {
+		coords, err := parseCoords(rawNear)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid near coords: %v", err))
+			writeError(w, http.StatusBadRequest, "invalid near coordinate: "+err.Error())
 			return
 		}
-		nearCoords = parsed
+		near = &coords
+		nearKey = fmt.Sprintf("%.3f,%.3f", coords[0], coords[1])
 	}
 
-	cacheKey := fmt.Sprintf("search:%s:%d:%s:%s", strings.ToLower(q), limit, strings.ToLower(area), near)
+	cacheKey := fmt.Sprintf("search:%s:%d:%s:%s", strings.ToLower(q), limit, strings.ToLower(area), nearKey)
 	if cached, hit := searchCache.Get(cacheKey); hit {
 		writeCachedJSON(w, http.StatusOK, true, cached)
 		return
 	}
 
-	params := url.Values{}
-	params.Set("q", q)
-	params.Set("format", "jsonv2")
-	params.Set("addressdetails", "1")
-	params.Set("accept-language", "en")
-	params.Set("limit", strconv.Itoa(limit))
-	// This service covers Ethiopia only; consumers cannot scope to another country.
-	params.Set("countrycodes", "et")
-	if area != "" {
-		bounds, err := areaBounds(area)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown area %q: %v", area, err))
-			return
-		}
-		params.Set("viewbox", fmt.Sprintf("%.6f,%.6f,%.6f,%.6f",
-			bounds[0], bounds[3], bounds[2], bounds[1]))
-		params.Set("bounded", "1")
-	}
-
-	body, err := nominatimGet("/search", params)
+	results, err := searchLocalPlaces(q, area, near, limit)
 	if err != nil {
-		log.Printf("Place search error [%s]: %v", q, err)
-		writeError(w, http.StatusInternalServerError, "Failed to search places")
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown area %q: %v", area, err))
 		return
-	}
-
-	var rawResults []nominatimResult
-	if err := json.Unmarshal(body, &rawResults); err != nil {
-		writeError(w, http.StatusInternalServerError, "Invalid geocoder response")
-		return
-	}
-
-	results := make([]Place, 0, len(rawResults))
-	for _, raw := range rawResults {
-		place, err := placeFromNominatim(raw)
-		if err != nil {
-			continue
-		}
-		results = append(results, place)
-	}
-
-	// near= is a local ranking preference; it never widens an area scope.
-	if near != "" {
-		sort.SliceStable(results, func(i, j int) bool {
-			di := haversineKm(results[i].Location[1], results[i].Location[0], nearCoords[1], nearCoords[0])
-			dj := haversineKm(results[j].Location[1], results[j].Location[0], nearCoords[1], nearCoords[0])
-			return di < dj
-		})
 	}
 
 	resp := SearchResponse{Query: q, Results: results}
@@ -882,53 +669,19 @@ func handleReverse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	zoom := 18
-	if raw := r.URL.Query().Get("zoom"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 || parsed > 18 {
-			writeError(w, http.StatusBadRequest, "zoom must be an integer between 1 and 18")
-			return
-		}
-		zoom = parsed
-	}
-
-	cacheKey := fmt.Sprintf("reverse:%.5f,%.5f:%d", lon, lat, zoom)
+	cacheKey := fmt.Sprintf("reverse:%.5f,%.5f", lon, lat)
 	if cached, hit := searchCache.Get(cacheKey); hit {
 		writeCachedJSON(w, http.StatusOK, true, cached)
 		return
 	}
 
-	params := url.Values{}
-	params.Set("lat", strconv.FormatFloat(lat, 'f', 5, 64))
-	params.Set("lon", strconv.FormatFloat(lon, 'f', 5, 64))
-	params.Set("format", "jsonv2")
-	params.Set("addressdetails", "1")
-	params.Set("zoom", strconv.Itoa(zoom))
-
-	body, err := nominatimGet("/reverse", params)
-	if err != nil {
-		log.Printf("Reverse geocode error [%.5f,%.5f]: %v", lon, lat, err)
-		writeError(w, http.StatusInternalServerError, "Failed to reverse geocode location")
-		return
-	}
-
-	var raw nominatimResult
-	if err := json.Unmarshal(body, &raw); err != nil {
-		writeError(w, http.StatusInternalServerError, "Invalid geocoder response")
-		return
-	}
-	if raw.DisplayName == "" {
-		writeError(w, http.StatusNotFound, "No place found for these coordinates")
-		return
-	}
-
-	place, err := placeFromNominatim(raw)
+	place, err := reverseLocalPlace(lon, lat)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "No place found for these coordinates")
 		return
 	}
 
-	resp := ReverseResponse{Place: &place, Location: [2]float64{lon, lat}}
+	resp := ReverseResponse{Place: place, Location: [2]float64{lon, lat}}
 	jsonBytes, err := json.Marshal(resp)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to serialize reverse response")

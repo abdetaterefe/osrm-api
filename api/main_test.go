@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -328,36 +329,8 @@ func TestRouteEndpointWithProfileAndSteps(t *testing.T) {
 
 func TestSearchEndpoint(t *testing.T) {
 	searchCache.Purge()
-	origURL := geocoderURL
-	origInterval := geocoderLimiter.interval
-	geocoderURL = "http://127.0.0.1:59998"
-	geocoderLimiter.interval = 0
-	defer func() {
-		geocoderURL = origURL
-		geocoderLimiter.interval = origInterval
-	}()
 
-	calls := 0
-	mock := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		calls++
-		if r.URL.Path != "/search" {
-			t.Errorf("expected upstream /search, got %s", r.URL.Path)
-		}
-		if got := r.URL.Query().Get("countrycodes"); got != "et" {
-			t.Errorf("expected default Ethiopia country code, got %q", got)
-		}
-		if got := r.Header.Get("User-Agent"); !strings.Contains(got, "amana-osrm-api") {
-			t.Errorf("expected custom User-Agent, got %q", got)
-		}
-		_, _ = rw.Write([]byte(`[
-			{"place_id":123,"osm_type":"node","osm_id":456,"name":"Posta","display_name":"Posta, Adama, Oromia, Ethiopia","lat":"8.54000","lon":"39.27000","category":"amenity","type":"post_office","address":{"city":"Adama","amenity":"post office"}},
-			{"place_id":124,"osm_type":"way","osm_id":789,"display_name":"ASTU Gate 1, Adama, Ethiopia","lat":"8.55000","lon":"39.28000","class":"highway","type":"residential","address":{"road":"ASTU Gate 1"}}
-		]`))
-	}))
-	defer mock.Close()
-	geocoderURL = mock.URL
-
-	req := httptest.NewRequest("GET", "/search?q=posta&near=39.27,8.54", nil)
+	req := httptest.NewRequest("GET", "/search?q=Adama", nil)
 	w := httptest.NewRecorder()
 	handleSearch(w, req)
 
@@ -371,21 +344,31 @@ func TestSearchEndpoint(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to decode search response: %v", err)
 	}
-	if resp.Query != "posta" || len(resp.Results) != 2 {
+	if resp.Query != "Adama" || len(resp.Results) == 0 {
 		t.Fatalf("unexpected search response: %+v", resp)
 	}
-	if resp.Results[0].Name != "Posta" || resp.Results[0].Location[0] != 39.27 || resp.Results[0].Location[1] != 8.54 {
-		t.Fatalf("unexpected first result: %+v", resp.Results[0])
-	}
-	if resp.Results[1].Name != "ASTU Gate 1" {
-		t.Fatalf("expected name from address.road, got %+v", resp.Results[1])
+	if !strings.Contains(strings.ToLower(resp.Results[0].Name), "adama") &&
+		!strings.Contains(strings.ToLower(resp.Results[0].DisplayName), "adama") {
+		t.Fatalf("expected Adama in first result, got %+v", resp.Results[0])
 	}
 
 	// Cached repeat
 	w2 := httptest.NewRecorder()
-	handleSearch(w2, httptest.NewRequest("GET", "/search?q=posta&near=39.27,8.54", nil))
-	if w2.Header().Get("X-Cache") != "HIT" || calls != 1 {
-		t.Fatalf("expected cache hit with 1 upstream call, got header=%s calls=%d", w2.Header().Get("X-Cache"), calls)
+	handleSearch(w2, httptest.NewRequest("GET", "/search?q=Adama", nil))
+	if w2.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("expected cache hit, got header=%s", w2.Header().Get("X-Cache"))
+	}
+
+	// Typo tolerance
+	wTypo := httptest.NewRecorder()
+	handleSearch(wTypo, httptest.NewRequest("GET", "/search?q=Hawasa", nil))
+	if wTypo.Code != http.StatusOK {
+		t.Fatalf("expected 200 for fuzzy query, got %d", wTypo.Code)
+	}
+	var typoResp SearchResponse
+	_ = json.Unmarshal(wTypo.Body.Bytes(), &typoResp)
+	if len(typoResp.Results) == 0 {
+		t.Fatalf("expected fuzzy results for Hawasa")
 	}
 
 	// Validation
@@ -403,43 +386,8 @@ func TestSearchEndpoint(t *testing.T) {
 
 func TestSearchWithAreaScope(t *testing.T) {
 	searchCache.Purge()
-	origURL := geocoderURL
-	origInterval := geocoderLimiter.interval
-	geocoderLimiter.interval = 0
-	defer func() {
-		geocoderURL = origURL
-		geocoderLimiter.interval = origInterval
-	}()
 
-	searchCalls := 0
-	mock := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query().Get("q")
-		if q == "Adama" {
-			// Area resolution request.
-			_, _ = rw.Write([]byte(`[{"display_name":"Adama, Ethiopia","lat":"8.541","lon":"39.270","boundingbox":["8.49","8.59","39.24","39.30"]}]`))
-			return
-		}
-		if q == "Nowhere" {
-			_, _ = rw.Write([]byte(`[]`))
-			return
-		}
-		searchCalls++
-		if got := r.URL.Query().Get("bounded"); got != "1" {
-			t.Errorf("expected bounded=1 for scoped search, got %q", got)
-		}
-		if got := r.URL.Query().Get("viewbox"); got != "39.240000,8.590000,39.300000,8.490000" {
-			t.Errorf("unexpected viewbox: %q", got)
-		}
-		// Second result is farther from near=39.27,8.54; it must be ranked last.
-		_, _ = rw.Write([]byte(`[
-			{"name":"Far Place","display_name":"Far Place, Addis Ababa, Ethiopia","lat":"9.01","lon":"38.75"},
-			{"name":"Near Place","display_name":"Near Place, Adama, Ethiopia","lat":"8.54","lon":"39.27"}
-		]`))
-	}))
-	defer mock.Close()
-	geocoderURL = mock.URL
-
-	req := httptest.NewRequest("GET", "/search?q=place&city=Adama&near=39.27,8.54", nil)
+	req := httptest.NewRequest("GET", "/search?q=hospital&area=Addis%20Ababa&near=38.75,9.02", nil)
 	w := httptest.NewRecorder()
 	handleSearch(w, req)
 
@@ -450,16 +398,13 @@ func TestSearchWithAreaScope(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if len(resp.Results) != 2 || resp.Results[0].Name != "Near Place" {
-		t.Fatalf("expected near result first, got %+v", resp.Results)
-	}
-	if searchCalls != 1 {
-		t.Fatalf("expected 1 place search call, got %d", searchCalls)
+	if len(resp.Results) == 0 {
+		t.Fatalf("expected scoped results in Addis Ababa, got 0")
 	}
 
 	// Unknown area should fail validation instead of silently broadening the scope.
 	w2 := httptest.NewRecorder()
-	handleSearch(w2, httptest.NewRequest("GET", "/search?q=place&area=Nowhere", nil))
+	handleSearch(w2, httptest.NewRequest("GET", "/search?q=place&area=AtlantisNowhere", nil))
 	if w2.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for unknown area, got %d: %s", w2.Code, w2.Body.String())
 	}
@@ -467,26 +412,12 @@ func TestSearchWithAreaScope(t *testing.T) {
 
 func TestReverseEndpoint(t *testing.T) {
 	searchCache.Purge()
-	origURL := geocoderURL
-	origInterval := geocoderLimiter.interval
-	geocoderURL = "http://127.0.0.1:59997"
-	geocoderLimiter.interval = 0
+	origValhalla := valhallaURL
+	// Point Valhalla to a closed port to verify local-index reverse works even without Valhalla.
+	valhallaURL = "http://127.0.0.1:59997"
 	defer func() {
-		geocoderURL = origURL
-		geocoderLimiter.interval = origInterval
+		valhallaURL = origValhalla
 	}()
-
-	mock := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/reverse" {
-			t.Errorf("expected upstream /reverse, got %s", r.URL.Path)
-		}
-		if got := r.URL.Query().Get("lat"); got != "8.54000" {
-			t.Errorf("expected lat 8.54000, got %q", got)
-		}
-		_, _ = rw.Write([]byte(`{"place_id":42,"osm_type":"way","osm_id":99,"display_name":"Bole Road, Adama, Oromia, Ethiopia","lat":"8.54001","lon":"39.27001","class":"highway","type":"primary","address":{"road":"Bole Road","city":"Adama"}}`))
-	}))
-	defer mock.Close()
-	geocoderURL = mock.URL
 
 	req := httptest.NewRequest("GET", "/reverse?lon=39.27&lat=8.54", nil)
 	w := httptest.NewRecorder()
@@ -499,7 +430,7 @@ func TestReverseEndpoint(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to decode reverse response: %v", err)
 	}
-	if resp.Place == nil || resp.Place.Name != "Bole Road" || resp.Location[0] != 39.27 || resp.Location[1] != 8.54 {
+	if resp.Place == nil || resp.Place.Name == "" || resp.Location[0] != 39.27 || resp.Location[1] != 8.54 {
 		t.Fatalf("unexpected reverse response: %+v", resp)
 	}
 
@@ -560,5 +491,36 @@ func TestMatrixEndpointWithProfile(t *testing.T) {
 	}
 	if matrix.DistancesMeters[0][1] != 1500 || matrix.DurationsSeconds[0][1] != 180 {
 		t.Fatalf("unexpected meters/seconds matrix: %+v", matrix)
+	}
+}
+
+func TestPlacesMemoryFootprint(t *testing.T) {
+	runtime.GC()
+	var after runtime.MemStats
+	places := loadPlaces()
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	t.Logf("Loaded %d Ethiopia places; HeapAlloc=%.2f MB", len(places), float64(after.HeapAlloc)/(1024*1024))
+	if len(places) < 10000 {
+		t.Fatalf("expected >10000 places, got %d", len(places))
+	}
+}
+
+func BenchmarkSearchLocalPlaces(b *testing.B) {
+	loadPlaces()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = searchLocalPlaces("hospital", "Addis Ababa", nil, 8)
+	}
+}
+
+func BenchmarkReverseLocalPlace(b *testing.B) {
+	loadPlaces()
+	origValhalla := valhallaURL
+	valhallaURL = "http://127.0.0.1:59997"
+	defer func() { valhallaURL = origValhalla }()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = reverseLocalPlace(39.27, 8.54)
 	}
 }

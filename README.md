@@ -13,7 +13,7 @@ Engineered for ultra-low memory environments (running comfortably under **200 MB
 - **Sub-Millisecond In-Memory LRU Cache**: Thread-safe in-memory cache with 24-hour TTL serving repeated queries in **< 1 ms** with automatic profile isolation.
 - **Smart Coordinate Auto-Correction**: Accepts both `lon,lat` and `lat,lon` formats, automatically detecting and correcting orientation for the Ethiopia geographic bounding box (~1.1m precision).
 - **Time-Distance Matrix**: Fast N×N matrix calculation for origin-destination pairs.
-- **Place Search & Reverse Geocoding**: Fast, cached `/search` and `/reverse` endpoints for finding places by name or turning GPS coordinates into a readable place name (powered by OpenStreetMap Nominatim behind a provider-neutral API).
+- **Place Search & Reverse Geocoding**: Fast, self-contained `/search` and `/reverse` endpoints powered by an embedded 14,600+ Ethiopia place index (zero external API dependencies, typo-tolerant prefix/fuzzy search, and optional local Valhalla street-name enrichment).
 - **Single-Binary Process Supervisor**: The Go server acts as PID 1, supervising the routing backend, conducting health probes, and handling graceful shutdowns.
 
 ---
@@ -248,16 +248,16 @@ Calculates distance and travel duration matrices between multiple coordinate pai
 
 ### 6. `GET /search`
 
-Finds places by name. Backed by OpenStreetMap Nominatim, cached for 24 hours, and limited to Ethiopia (this service's coverage area). Results use the same `[lon, lat]` coordinate convention as the routing endpoints.
+Finds places by name using the embedded Ethiopia place index — supports partial names, alternate spellings, and typo tolerance with zero external network calls. Results use the same `[lon, lat]` coordinate convention as the routing endpoints.
 
 **Query Parameters:**
 - `q` *(required)*: Place name or address to look up
 - `limit` *(optional)*: 1–20 results (default: `8`)
-- `area` *(optional)*: City, region, or state name to restrict results to (alias: `city`). The name is resolved to a bounding box once, cached, and then strictly applied. With no `area`, the whole country is searched.
-- `near` *(optional)*: `lon,lat` or `lat,lon` point used to **rank** results by distance within the chosen area. It never widens the area scope.
+- `area` *(optional)*: City, region, or state name to restrict results to (alias: `city`).
+- `near` *(optional)*: `lon,lat` or `lat,lon` point used to rank closer results higher.
 
 ```bash
-curl "https://peculiar-rina-sharenex-b86b2492.koyeb.app/search?q=hospital&area=Adama&near=39.27,8.54&limit=3"
+curl "https://peculiar-rina-sharenex-b86b2492.koyeb.app/search?q=hospital&area=Adama&limit=3"
 ```
 
 A consuming app can pass any Ethiopian city, region, or state as `area` — the API itself has no hardcoded city default.
@@ -309,7 +309,7 @@ curl "https://peculiar-rina-sharenex-b86b2492.koyeb.app/reverse?lon=39.27&lat=8.
 }
 ```
 
-> Place search data © OpenStreetMap contributors. Requests to Nominatim are rate-limited to one per second and cached by this service in accordance with the [Nominatim Usage Policy](https://operations.osmfoundation.org/policies/nominatim/).
+> Place search & reverse geocoding run 100% locally against the embedded GeoNames Ethiopia index (and local Valhalla `/locate` for street names) with no external API calls or rate limits.
 
 ---
 
@@ -324,8 +324,7 @@ The service is configured using standard environment variables:
 | `VALHALLA_URL` | `http://127.0.0.1:8002` | Valhalla daemon listen URL |
 | `VALHALLA_THREADS` | `1` | Worker thread count for Valhalla engine |
 | `STRICT_BOUNDS` | `true` | Restrict coordinates to the Ethiopia bounding box |
-| `GEOCODER_URL` | `https://nominatim.openstreetmap.org` | Base URL for the place search / reverse geocoding provider |
-| `GEOCODER_USER_AGENT` | `amana-osrm-api/1.0 (…)` | User-Agent sent to the geocoder; should include contact details |
+| `PHOTON_URL` | `https://photon.komoot.io` | Base URL for the Photon place search / reverse geocoding service |
 | `GOMEMLIMIT` | `48MiB` | Go runtime memory ceiling to prevent GC spikes |
 | `GOGC` | `50` | Go garbage collection frequency |
 

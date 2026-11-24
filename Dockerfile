@@ -5,9 +5,8 @@ WORKDIR /build
 # Install curl to reliably follow GitHub release redirects
 RUN apk add --no-cache curl ca-certificates
 
-# Copy and compile Go API
-COPY api/go.mod ./
-COPY api/main.go ./
+# Copy and compile Go API (including embedded Ethiopia place index)
+COPY api/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o api-server .
 
 # Download pre-compiled Ethiopia Valhalla tiles from GitHub Release v2.0-valhalla-data
