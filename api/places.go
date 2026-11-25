@@ -511,27 +511,68 @@ func valhallaLocateStreet(lon, lat float64) string {
 	return ""
 }
 
+func isUsefulReverseType(typ string) bool {
+	switch typ {
+	case "insm", "ruin", "cemp", "mnmt", "ft", "bldg", "mstn", "pal":
+		return false
+	default:
+		return true
+	}
+}
+
 func reverseLocalPlace(lon, lat float64) (*Place, error) {
 	places := loadPlaces()
 	if len(places) == 0 {
 		return nil, fmt.Errorf("no places loaded")
 	}
 
-	bestIdx := -1
-	bestDistSq := math.MaxFloat64
+	bestPopIdx := -1
+	bestPopDistSq := math.MaxFloat64
+	bestPOIIndex := -1
+	bestPOIDistSq := math.MaxFloat64
 	cosLat := math.Cos(lat * math.Pi / 180.0)
+	// ~0.5 km tie-breaker window in squared degrees (0.0045^2 ≈ 2.0e-5)
+	const tieWindowSq = 0.00002
+
 	for i := range places {
-		d := fastDistSqDeg(lon, lat, cosLat, places[i].Lon, places[i].Lat)
-		if d < bestDistSq {
-			bestDistSq = d
-			bestIdx = i
+		p := &places[i]
+		if !isUsefulReverseType(p.Type) {
+			continue
+		}
+		d := fastDistSqDeg(lon, lat, cosLat, p.Lon, p.Lat)
+		if p.Class == "P" {
+			if bestPopIdx < 0 || d+tieWindowSq < bestPopDistSq || (math.Abs(d-bestPopDistSq) <= tieWindowSq && p.Pop > places[bestPopIdx].Pop) {
+				if d < bestPopDistSq || p.Pop > places[bestPopIdx].Pop {
+					bestPopDistSq = d
+					bestPopIdx = i
+				}
+			}
+		} else if p.Class == "S" && p.Category != "place_of_worship" {
+			if d < bestPOIDistSq {
+				bestPOIDistSq = d
+				bestPOIIndex = i
+			}
 		}
 	}
-	if bestIdx < 0 {
+
+	chosenIdx := bestPopIdx
+	// Use a nearby recognizable POI (hospital, school, hotel, market) only if it is within ~400m
+	// (0.0036^2 ≈ 1.3e-5) and closer than the nearest city/town center.
+	if bestPOIIndex >= 0 && bestPOIDistSq <= 0.000013 && (chosenIdx < 0 || bestPOIDistSq < bestPopDistSq) {
+		chosenIdx = bestPOIIndex
+	}
+	if chosenIdx < 0 {
 		return nil, fmt.Errorf("no place found")
 	}
 
 	street := valhallaLocateStreet(lon, lat)
-	place := places[bestIdx].toPlace(street)
+	place := places[chosenIdx].toPlace(street)
+	// Use widely known name if primary is Nazrēt -> Adama
+	if places[chosenIdx].Name == "Nazrēt" {
+		place.DisplayName = strings.Replace(place.DisplayName, "Nazrēt", "Adama", 1)
+		if street == "" {
+			place.Name = "Adama"
+		}
+	}
 	return &place, nil
 }
